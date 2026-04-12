@@ -15,11 +15,11 @@
     <img src="docs/assets/hero.svg" alt="Logo">
   </a>
 
-  <h3 align="center">Open Notebook</h3>
+  <h3 align="center">PaperMind</h3>
 
   <p align="center">
-    An open source, privacy-focused alternative to Google's Notebook LM!
-    <br /><strong>Join our <a href="https://discord.gg/37XJPXfz2w">Discord server</a> for help, to share workflow ideas, and suggest features!</strong>
+    A self-hosted academic knowledge base.
+    <br /><em>Forked from the excellent <a href="https://github.com/lfnovo/open-notebook">Open Notebook</a> project.</em>
     <br />
     <a href="https://www.open-notebook.ai"><strong>Checkout our website »</strong></a>
     <br />
