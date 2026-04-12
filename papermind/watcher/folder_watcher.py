@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import os
+import shutil
 from pathlib import Path
 
 import httpx
@@ -8,6 +9,8 @@ from loguru import logger
 from watchdog.events import FileCreatedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
+from open_notebook.config import UPLOADS_FOLDER
+from api.routers.sources import generate_unique_filename
 from papermind.models import WatchedFolder
 
 
@@ -69,10 +72,20 @@ async def ingest_pdf(pdf_path: str, notebook_id: str):
     async with httpx.AsyncClient(timeout=120.0) as client:
         logger.info(f"Ingesting {pdf_path} to notebook {notebook_id} via API")
 
+        # 0. Copy file to uploads folder so the API accepts it
+        clean_name = Path(pdf_path).name
+        try:
+            final_path = generate_unique_filename(clean_name, UPLOADS_FOLDER)
+            shutil.copy2(pdf_path, final_path)
+            logger.debug(f"Copied {pdf_path} to {final_path}")
+        except Exception as e:
+            logger.error(f"Failed to copy {pdf_path} to {UPLOADS_FOLDER}: {e}")
+            return
+
         # 1. Start ingestion
         payload = {
             "type": "upload",
-            "file_path": str(Path(pdf_path).absolute()),
+            "file_path": str(Path(final_path).absolute()),
             "notebooks": [notebook_id],
             "embed": False,
         }
@@ -164,7 +177,7 @@ class FolderWatcher:
         
         # In a real SurrealDB flow we could read the WatchedFolder table on boot
         try:
-            folders = await WatchedFolder.all()
+            folders = await WatchedFolder.get_all()
             for folder in folders:
                 if folder.active:
                     self.add_folder_watch(

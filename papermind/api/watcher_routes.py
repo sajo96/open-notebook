@@ -27,10 +27,14 @@ async def add_watched_folder(req: WatchRequest, background_tasks: BackgroundTask
     """Add a new watched folder to the database and start the watcher."""
     try:
         # Check if already exists
-        existing = await WatchedFolder.all()
+        existing = await WatchedFolder.get_all()
         for f in existing:
             if f.path == req.path:
-                raise HTTPException(status_code=400, detail="Folder already watched")
+                # Instead of erroring out immediately, let's clean up inactive or old records if they overlap.
+                # Since we changed DELETE to actually delete, there shouldn't be valid overlapping active ones.
+                logger.info(f"Cleaning up existing watcher for {req.path}")
+                watcher_instance.remove_folder_watch(f.path)
+                await f.delete()
                 
         folder = WatchedFolder(
             path=req.path,
@@ -67,8 +71,7 @@ async def remove_watched_folder(folder_id: str):
             raise HTTPException(status_code=404, detail="Folder not found")
             
         watcher_instance.remove_folder_watch(folder.path)
-        folder.active = False
-        await folder.save()
+        await folder.delete()
         
         return {"status": "success", "message": f"Stopped watching {folder.path}"}
     except HTTPException:
@@ -82,7 +85,7 @@ async def remove_watched_folder(folder_id: str):
 async def list_watched_folders():
     """List all watched folders and their status."""
     try:
-        folders = await WatchedFolder.all()
+        folders = await WatchedFolder.get_all()
         return [
             WatchResponse(
                 id=f.id,
