@@ -108,11 +108,25 @@ async def lifespan(app: FastAPI):
         # Non-fatal: profiles can be migrated manually via UI
 
     logger.success("API initialization completed successfully")
+    
+    # Initialize Folder Watcher
+    try:
+        from papermind.watcher.folder_watcher import watcher_instance
+        await watcher_instance.start()
+        logger.success("Watcher initialization completed successfully")
+    except Exception as e:
+        logger.error(f"Failed to start folder watcher: {e}")
 
     # Yield control to the application
     yield
 
     # Shutdown: cleanup if needed
+    try:
+        from papermind.watcher.folder_watcher import watcher_instance
+        await watcher_instance.stop()
+    except Exception:
+        pass
+        
     logger.info("API shutdown complete")
 
 
@@ -280,6 +294,11 @@ app.include_router(chat.router, prefix="/api", tags=["chat"])
 app.include_router(source_chat.router, prefix="/api", tags=["source-chat"])
 app.include_router(credentials.router, prefix="/api", tags=["credentials"])
 app.include_router(languages.router, prefix="/api", tags=["languages"])
+
+# Custom PaperMind additions
+from papermind.api import watcher_routes
+app.include_router(watcher_routes.router, prefix="/api", tags=["papermind-watcher"])
+
 
 
 @app.get("/")
