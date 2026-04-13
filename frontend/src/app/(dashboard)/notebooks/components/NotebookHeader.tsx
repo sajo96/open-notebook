@@ -4,13 +4,14 @@ import { useState } from 'react'
 import { NotebookResponse } from '@/lib/types/api'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Archive, ArchiveRestore, Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, Trash2, Network } from 'lucide-react'
 import { useUpdateNotebook } from '@/lib/hooks/use-notebooks'
 import { NotebookDeleteDialog } from './NotebookDeleteDialog'
 import { formatDistanceToNow } from 'date-fns'
 import { getDateLocale } from '@/lib/utils/date-locale'
 import { InlineEdit } from '@/components/common/InlineEdit'
 import { useTranslation } from '@/lib/hooks/use-translation'
+import Link from 'next/link'
 
 interface NotebookHeaderProps {
   notebook: NotebookResponse
@@ -20,12 +21,12 @@ export function NotebookHeader({ notebook }: NotebookHeaderProps) {
   const { t, language } = useTranslation()
   const dfLocale = getDateLocale(language)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
-  
+
   const updateNotebook = useUpdateNotebook()
 
   const handleUpdateName = async (name: string) => {
     if (!name || name === notebook.name) return
-    
+
     await updateNotebook.mutateAsync({
       id: notebook.id,
       data: { name }
@@ -34,7 +35,7 @@ export function NotebookHeader({ notebook }: NotebookHeaderProps) {
 
   const handleUpdateDescription = async (description: string) => {
     if (description === notebook.description) return
-    
+
     await updateNotebook.mutateAsync({
       id: notebook.id,
       data: { description: description || undefined }
@@ -68,6 +69,16 @@ export function NotebookHeader({ notebook }: NotebookHeaderProps) {
               )}
             </div>
             <div className="flex gap-2">
+              <Link href={`/notebooks/${encodeURIComponent(notebook.id)}/graph`}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="bg-primary/10 text-primary hover:bg-primary hover:text-white"
+                >
+                  <Network className="h-4 w-4 mr-2" />
+                  Knowledge Map
+                </Button>
+              </Link>
               <Button
                 variant="outline"
                 size="sm"
@@ -96,7 +107,7 @@ export function NotebookHeader({ notebook }: NotebookHeaderProps) {
               </Button>
             </div>
           </div>
-          
+
           <InlineEdit
             id="notebook-description"
             name="notebook-description"
@@ -108,9 +119,9 @@ export function NotebookHeader({ notebook }: NotebookHeaderProps) {
             multiline
             emptyText={t.notebooks.addDescription}
           />
-          
+
           <div className="text-sm text-muted-foreground">
-            {t.common.created.replace('{time}', formatDistanceToNow(new Date(notebook.created), { addSuffix: true, locale: dfLocale }))} • 
+            {t.common.created.replace('{time}', formatDistanceToNow(new Date(notebook.created), { addSuffix: true, locale: dfLocale }))} •
             {t.common.updated.replace('{time}', formatDistanceToNow(new Date(notebook.updated), { addSuffix: true, locale: dfLocale }))}
           </div>
         </div>
