@@ -16,8 +16,18 @@ export default function KnowledgeGraph({ notebookId }: { notebookId: string }) {
     const [conceptFilter, setConceptFilter] = useState<string>("");
     const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
 
+    const normalizedNotebookId = useMemo(() => {
+        // Route params may already be URL-encoded (e.g. notebook%3Aabc).
+        // Decode once so we only encode once when calling the API.
+        try {
+            return decodeURIComponent(notebookId);
+        } catch {
+            return notebookId;
+        }
+    }, [notebookId]);
+
     const fetchGraphData = async (): Promise<GraphData> => {
-        let url = `/api/papermind/graph/${encodeURIComponent(notebookId)}?min_similarity=${minSim}`;
+        let url = `/api/papermind/graph/${encodeURIComponent(normalizedNotebookId)}?min_similarity=${minSim}&max_similarity_edges=800&max_atoms=2500`;
         if (conceptFilter) url += `&concept_filter=${encodeURIComponent(conceptFilter)}`;
 
         // We expect the FASTAPI backend mapping at /api (via proxy in UI or directly)
@@ -30,7 +40,7 @@ export default function KnowledgeGraph({ notebookId }: { notebookId: string }) {
     };
 
     const { data, isLoading, error } = useQuery<GraphData>({
-        queryKey: ["notebookGraph", notebookId, minSim, conceptFilter],
+        queryKey: ["notebookGraph", normalizedNotebookId, minSim, conceptFilter],
         queryFn: fetchGraphData,
     });
 

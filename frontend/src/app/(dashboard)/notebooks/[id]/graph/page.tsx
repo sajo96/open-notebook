@@ -14,7 +14,12 @@ export default function NotebookGraphPage({
     params: Promise<{ id: string }>;
 }) {
     const resolvedParams = use(params);
-    const notebookId = resolvedParams.id;
+    let notebookId = resolvedParams.id;
+    try {
+        notebookId = decodeURIComponent(notebookId);
+    } catch {
+        // Keep original if not URI-encoded.
+    }
 
     return (
         <main className="flex h-screen w-full flex-col">
