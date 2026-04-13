@@ -2,13 +2,17 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional
 from loguru import logger
+from pathlib import Path
+import asyncio
 
 from papermind.models import AcademicPaper, Atom
 from papermind.atoms.chunker import chunk_paper_into_atoms
 from papermind.atoms.embedder import AtomEmbedder
 from papermind.db.vector_store import vector_store
 from papermind.graph.graph_builder import build_similarity_edges
-from open_notebook.database.repository import repo_query
+from papermind.parsers.academic_pdf_parser import AcademicPDFParser
+from open_notebook.domain.notebook import Source
+from open_notebook.database.repository import repo_query, ensure_record_id
 
 router = APIRouter(prefix="/papermind", tags=["papermind-atoms"])
 
@@ -33,12 +37,26 @@ async def create_atoms(req: AtomizeRequest, background_tasks: BackgroundTasks):
         paper = await AcademicPaper.get(req.paper_id)
         if not paper:
             raise HTTPException(status_code=404, detail="Paper not found")
-            
-        atoms = chunk_paper_into_atoms(paper, paper.id)
+
+        chunk_input = paper
+        sections = getattr(paper, "sections", None)
+        if not isinstance(sections, dict) or len(sections) == 0:
+            try:
+                source = await Source.get(str(paper.source_id))
+                file_path = source.asset.file_path if source and source.asset else None
+                if file_path and Path(file_path).exists():
+                    parser = AcademicPDFParser(file_path=file_path)
+                    loop = asyncio.get_event_loop()
+                    chunk_input = await loop.run_in_executor(None, parser.parse)
+            except Exception as e:
+                logger.warning(f"Fallback parse for atomization failed for {paper.id}: {e}")
+
+        atoms = chunk_paper_into_atoms(chunk_input, paper.id)
         saved_atoms = []
         
         # Save initially to get IDs
         for a in atoms:
+            a.paper_id = ensure_record_id(str(a.paper_id))
             await a.save()
             saved_atoms.append(a)
             
@@ -48,6 +66,7 @@ async def create_atoms(req: AtomizeRequest, background_tasks: BackgroundTasks):
         
         # Update atoms and sqlite-vec
         for a, emb in zip(saved_atoms, embeddings):
+            a.paper_id = ensure_record_id(str(a.paper_id))
             a.embedding = emb.tolist()
             await a.save()
             vector_store.upsert(a.id, emb)

@@ -33,7 +33,7 @@ from open_notebook.config import UPLOADS_FOLDER
 from open_notebook.database.repository import ensure_record_id, repo_query
 from open_notebook.domain.notebook import Asset, Notebook, Source
 from open_notebook.domain.transformation import Transformation
-from open_notebook.exceptions import InvalidInputError
+from open_notebook.exceptions import InvalidInputError, NotFoundError
 
 router = APIRouter()
 
@@ -767,6 +767,8 @@ async def get_source_status(source_id: str):
                 command_id=str(source.command) if source.command else None,
             )
 
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="Source not found")
     except HTTPException:
         raise
     except Exception as e:
