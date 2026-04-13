@@ -25,7 +25,8 @@ export default function KnowledgeGraph({ notebookId }: { notebookId: string }) {
         if (!res.ok) {
             throw new Error(`Failed to load graph: ${res.statusText}`);
         }
-        return res.json();
+        const json = await res.json();
+        return { nodes: json.nodes, links: json.edges, meta: json.meta };
     };
 
     const { data, isLoading, error } = useQuery<GraphData>({
