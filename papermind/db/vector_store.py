@@ -2,6 +2,7 @@ import os
 import sqlite3
 import sqlite_vec
 import numpy as np
+import struct
 from typing import List, Dict
 
 class VectorStore:
@@ -19,6 +20,7 @@ class VectorStore:
             db.enable_load_extension(True)
             sqlite_vec.load(db)
             db.enable_load_extension(False)
+            # Use sqlite-vec standard initialization
             db.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(id TEXT PRIMARY KEY, embedding float[{self.dim}])")
             db.commit()
 
@@ -29,20 +31,25 @@ class VectorStore:
         if isinstance(embedding, list):
             embedding = np.array(embedding, dtype=np.float32)
             
+        blob = embedding.tobytes()
+            
         with sqlite3.connect(self.db_path) as db:
             db.enable_load_extension(True)
             sqlite_vec.load(db)
             db.enable_load_extension(False)
             
+            # Using bare blob
             db.execute(
-                "INSERT OR REPLACE INTO vec_items(id, embedding) VALUES (?, serialize_f32(?))",
-                (atom_id, embedding.tobytes())
+                "INSERT OR REPLACE INTO vec_items(id, embedding) VALUES (?, ?)",
+                (atom_id, blob)
             )
             db.commit()
 
     def find_similar(self, vector: np.ndarray | List[float], top_k: int = 10, threshold: float = 0.75, exclude_id: str = None) -> List[Dict]:
         if isinstance(vector, list):
             vector = np.array(vector, dtype=np.float32)
+            
+        blob = vector.tobytes()
             
         with sqlite3.connect(self.db_path) as db:
             db.enable_load_extension(True)
@@ -54,23 +61,23 @@ class VectorStore:
             if exclude_id:
                 cursor.execute(
                     """
-                    SELECT id, vec_distance_cosine(embedding, serialize_f32(?)) AS distance
+                    SELECT id, vec_distance_cosine(embedding, ?) AS distance
                     FROM vec_items
                     WHERE id != ?
                     ORDER BY distance ASC
                     LIMIT ?
                     """,
-                    (vector.tobytes(), exclude_id, top_k)
+                    (blob, exclude_id, top_k)
                 )
             else:
                 cursor.execute(
                     """
-                    SELECT id, vec_distance_cosine(embedding, serialize_f32(?)) AS distance
+                    SELECT id, vec_distance_cosine(embedding, ?) AS distance
                     FROM vec_items
                     ORDER BY distance ASC
                     LIMIT ?
                     """,
-                    (vector.tobytes(), top_k)
+                    (blob, top_k)
                 )
                 
             results = []
