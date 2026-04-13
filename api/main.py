@@ -296,10 +296,11 @@ app.include_router(credentials.router, prefix="/api", tags=["credentials"])
 app.include_router(languages.router, prefix="/api", tags=["languages"])
 
 # Custom PaperMind additions
-from papermind.api import watcher_routes, parser_routes, atoms_routes
+from papermind.api import watcher_routes, parser_routes, atoms_routes, note_routes
 app.include_router(watcher_routes.router, prefix="/api", tags=["papermind-watcher"])
 app.include_router(parser_routes.router, prefix="/api", tags=["papermind-parser"])
 app.include_router(atoms_routes.router, prefix="/api", tags=["papermind-atoms"])
+app.include_router(note_routes.router, prefix="/api", tags=["papermind-notes"])
 
 
 

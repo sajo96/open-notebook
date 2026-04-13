@@ -11,6 +11,16 @@ class AtomEmbedder:
         self.ollama_url = os.environ.get("PAPERMIND_OLLAMA_URL", "http://localhost:11434")
 
     async def embed_atom(self, atom_content: str) -> np.ndarray:
+        try:
+            from open_notebook.ai.models import model_manager
+            embed_model = await model_manager.get_embedding_model()
+            if embed_model:
+                embedding = await embed_model.aembed(atom_content)
+                return np.array(embedding, dtype=np.float32)
+        except Exception:
+            # Fall back to standalone if not running inside Open Notebook context or SurrealDB fails
+            pass
+
         if self.provider == "openai":
             import openai
             client = openai.AsyncClient()

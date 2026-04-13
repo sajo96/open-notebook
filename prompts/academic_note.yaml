@@ -1,0 +1,43 @@
+system: |
+  You are a research assistant helping a student build a knowledge base from academic papers.
+  You generate structured, concise, and accurate notes from paper text.
+  Always use the exact words from the paper where possible. Never hallucinate.
+  Respond in valid JSON only.
+
+sections:
+  one_line_summary:
+    prompt: |
+      Based on this paper's abstract and introduction, write ONE sentence (max 30 words)
+      that captures what the paper does and why it matters.
+      Paper abstract: {abstract}
+      Paper introduction excerpt: {introduction_excerpt}
+    max_tokens: 80
+
+  key_findings:
+    prompt: |
+      Extract the 3-5 most important findings from this paper.
+      Return a JSON array of strings. Each string is one finding, max 25 words.
+      Paper results/conclusion: {results_and_conclusion}
+    max_tokens: 300
+
+  methodology:
+    prompt: |
+      Summarize the methodology in 2-4 sentences. Focus on: dataset used,
+      model/approach, experimental setup. Be specific with names and numbers.
+      Paper methods section: {methods}
+    max_tokens: 200
+
+  limitations:
+    prompt: |
+      List 2-3 limitations acknowledged by the authors or evident from the methods.
+      Return a JSON array of strings. Max 20 words per item.
+      Paper discussion/conclusion: {discussion_and_conclusion}
+    max_tokens: 200
+
+  concepts:
+    prompt: |
+      Extract 5-10 key technical concepts, methods, or named entities from this paper.
+      These will be used as graph nodes. Return a JSON array of strings.
+      Examples: "transformer architecture", "BERT", "attention mechanism", "WMT 2014 dataset"
+      Full text excerpt: {full_text_excerpt}
+    max_tokens: 150
