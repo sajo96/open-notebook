@@ -47,6 +47,7 @@ from api.routers import (
 from api.routers import commands as commands_router
 from open_notebook.database.async_migrate import AsyncMigrationManager
 from open_notebook.utils.encryption import get_secret_from_env
+from papermind.db.run_migrations import run_migrations as run_papermind_migrations
 
 # Import commands to register them in the API process
 try:
@@ -92,6 +93,10 @@ async def lifespan(app: FastAPI):
             logger.info(
                 "Database is already at the latest version. No migrations needed."
             )
+
+        # Apply PaperMind-specific schema updates after core migrations.
+        await run_papermind_migrations()
+        logger.success("PaperMind migrations applied successfully")
     except Exception as e:
         logger.error(f"CRITICAL: Database migration failed: {str(e)}")
         logger.exception(e)

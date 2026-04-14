@@ -1,6 +1,6 @@
 -- AcademicPaper: extends the existing source record with structured metadata
 DEFINE TABLE academic_paper SCHEMAFULL;
-DEFINE FIELD source_id       ON academic_paper TYPE any;
+DEFINE FIELD source_id       ON academic_paper TYPE record(source);
 DEFINE FIELD title           ON academic_paper TYPE string;
 DEFINE FIELD authors         ON academic_paper TYPE array<string>;
 DEFINE FIELD abstract        ON academic_paper TYPE option<string>;
@@ -13,7 +13,7 @@ DEFINE FIELD created_at      ON academic_paper TYPE datetime DEFAULT time::now()
 
 -- Atom: a small semantic unit (one section or chunk) from a paper
 DEFINE TABLE atom SCHEMAFULL;
-DEFINE FIELD paper_id        ON atom TYPE any;
+DEFINE FIELD paper_id        ON atom TYPE record(academic_paper);
 DEFINE FIELD section_label   ON atom TYPE string;  -- "abstract" | "introduction" | "methods" | "results" | "discussion" | "conclusion" | "chunk_{n}"
 DEFINE FIELD content         ON atom TYPE string;
 DEFINE FIELD embedding       ON atom TYPE option<array<float>>;  -- stored as float array; also mirrored in sqlite-vec
@@ -40,7 +40,7 @@ DEFINE TABLE tagged_with SCHEMAFULL TYPE RELATION FROM academic_paper TO concept
 -- WatchedFolder: config for folder watcher service
 DEFINE TABLE watched_folder SCHEMAFULL;
 DEFINE FIELD path            ON watched_folder TYPE string;
-DEFINE FIELD notebook_id     ON watched_folder TYPE any;
+DEFINE FIELD notebook_id     ON watched_folder TYPE record(notebook);
 DEFINE FIELD recursive       ON watched_folder TYPE bool DEFAULT false;
 DEFINE FIELD active          ON watched_folder TYPE bool DEFAULT true;
 DEFINE FIELD created_at      ON watched_folder TYPE datetime DEFAULT time::now();

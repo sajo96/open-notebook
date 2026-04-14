@@ -37,6 +37,29 @@ class Concept(ObjectModel):
     created_at: Optional[datetime] = None
 
 
+class Cites(ObjectModel):
+    table_name: ClassVar[str] = 'cites'
+
+    in_id: Union[str, Any]
+    out_id: Union[str, Any]
+    confidence: float = 1.0
+
+
+class SimilarTo(ObjectModel):
+    table_name: ClassVar[str] = 'similar_to'
+
+    in_id: Union[str, Any]
+    out_id: Union[str, Any]
+    similarity_score: float
+
+
+class TaggedWith(ObjectModel):
+    table_name: ClassVar[str] = 'tagged_with'
+
+    in_id: Union[str, Any]
+    out_id: Union[str, Any]
+
+
 class WatchedFolder(ObjectModel):
     table_name: ClassVar[str] = 'watched_folder'
     
