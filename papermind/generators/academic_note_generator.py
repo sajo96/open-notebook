@@ -41,6 +41,17 @@ class AcademicNoteGenerator:
     def _normalize_key(value: str) -> str:
         return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
 
+    @staticmethod
+    def _canonical_concept_id(value: str) -> Optional[str]:
+        raw = (value or "").strip().lower()
+        if not raw:
+            return None
+        key = re.sub(r"[^a-z0-9\s]+", " ", raw)
+        key = re.sub(r"\s+", " ", key).strip()
+        if len(key) < 3:
+            return None
+        return f"concept:{key.replace(' ', '_')}"
+
     def _section_text(self, paper: AcademicPaper, *aliases: str, limit: int = 4000) -> str:
         sections = paper.sections if isinstance(paper.sections, dict) else {}
         if not sections:
@@ -355,11 +366,17 @@ class AcademicNoteGenerator:
                 },
             )
 
-        # 7. Create/link Concept records
+        # 7. Create/link concept records (normalized and deduplicated)
+        concept_map: Dict[str, str] = {}
         for concept_label in concepts:
-            # Check if concept exists, or create it. We can UPSERT by label natively but let's query first
-            slug = concept_label.strip().lower().replace(" ", "_")
-            concept_id = f"concept:{slug}"
+            cleaned = str(concept_label or "").strip()
+            concept_id = self._canonical_concept_id(cleaned)
+            if not concept_id:
+                continue
+            if concept_id not in concept_map:
+                concept_map[concept_id] = cleaned
+
+        for concept_id, concept_label in concept_map.items():
             try:
                 await repo_query(
                     "UPDATE $id SET label = $label, created_at = time::now()", 
@@ -382,7 +399,7 @@ class AcademicNoteGenerator:
             key_findings=list(key_findings),
             methodology=str(methodology),
             limitations=list(limitations),
-            concepts=list(concepts),
+            concepts=list(concept_map.values()),
             note_id=note_id
         )
         return generated

@@ -261,6 +261,7 @@ async def get_notebook_graph(
         nodes_dict: Dict[str, GraphNode] = {}
         edges: List[GraphEdge] = []
         paper_concepts_map: Dict[str, set[str]] = {}
+        paper_citations_map: Dict[str, List[str]] = {}
 
         paper_count = 0
         concept_count = 0
@@ -302,6 +303,7 @@ async def get_notebook_graph(
                 concepts=canonical_concepts,
             )
             paper_concepts_map[paper_id] = set(canonical_concepts)
+            paper_citations_map[paper_id] = _record_id_list(p.get("cited_papers", []))
             paper_count += 1
 
             # Author Nodes
@@ -372,14 +374,12 @@ async def get_notebook_graph(
                     )
                 )
 
-            # Citations Edges
-            cites_list = p.get("cited_papers", [])
-            if cites_list:
-                for cited in cites_list:
-                    cited_id = _record_id_str(cited)
-                    if not cited_id:
-                        continue
-                    edges.append(GraphEdge(source=paper_id, target=cited_id, type="cites", weight=1.0))
+        # Citation edges are added in a dedicated pass to avoid loop-variable leakage.
+        for source_paper, cited_ids in paper_citations_map.items():
+            for cited_id in cited_ids:
+                if not cited_id:
+                    continue
+                edges.append(GraphEdge(source=source_paper, target=cited_id, type="cites", weight=1.0))
 
         # Add plain sources as papers if they aren't already represented by an academic_paper
         parsed_source_ids = {
