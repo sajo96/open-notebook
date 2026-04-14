@@ -86,6 +86,17 @@ async def _trigger_papermind_pipeline(source: Source) -> None:
                     f"PaperMind atomize skipped for {paper_id}: "
                     f"HTTP {atomize_res.status_code} {atomize_res.text}"
                 )
+                return
+
+            note_res = await client.post(
+                f"{api_base}/api/papermind/generate_note",
+                json={"paper_id": paper_id, "regenerate": False},
+            )
+            if note_res.status_code >= 400:
+                logger.warning(
+                    f"PaperMind note generation skipped for {paper_id}: "
+                    f"HTTP {note_res.status_code} {note_res.text}"
+                )
     except Exception as e:
         logger.warning(f"PaperMind pipeline trigger failed for source {source_id}: {e}")
 

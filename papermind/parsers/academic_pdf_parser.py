@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +17,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from open_notebook.ai.provision import provision_langchain_model
 
 logger = logging.getLogger(__name__)
+
+_SCHOLARLY_LOCK = threading.Lock()
+_DOI_TRAILING_PUNCTUATION = ".,;:)]}"
 
 
 SECTION_PATTERN = re.compile(
@@ -41,8 +45,30 @@ class ParsedPaper:
 def find_doi(text: str) -> str | None:
     match = re.search(r"10\.\d{4,}/[^\s]+", text)
     if match:
-        return match.group(0).rstrip(".")
+        return match.group(0).rstrip(_DOI_TRAILING_PUNCTUATION)
     return None
+
+
+def _scholarly_enabled() -> bool:
+    # Scholarly fallback is expensive and unstable under concurrent parsing.
+    return os.environ.get("PAPERMIND_ENABLE_SCHOLARLY", "false").lower() == "true"
+
+
+def _is_reasonable_lookup_title(title: str) -> bool:
+    title_clean = (title or "").strip()
+    if len(title_clean) < 8 or len(title_clean) > 220:
+        return False
+
+    title_lower = title_clean.lower()
+    noisy_markers = ["issn", "http://", "https://", "www.", "volume", "issue"]
+    if any(marker in title_lower for marker in noisy_markers):
+        return False
+
+    # Skip obvious metadata blobs and low-signal uppercase headers.
+    if title_clean.isupper() and len(title_clean.split()) > 8:
+        return False
+
+    return True
 
 
 def _clean_response_text(text: str) -> str:
@@ -70,6 +96,9 @@ def _extract_line_records(page: fitz.Page) -> list[tuple[str, bool]]:
     except Exception:
         return []
 
+    if not isinstance(page_dict, dict):
+        return []
+
     lines: list[tuple[str, bool]] = []
     for block in page_dict.get("blocks", []):
         if block.get("type") != 0:
@@ -87,7 +116,8 @@ def _extract_line_records(page: fitz.Page) -> list[tuple[str, bool]]:
 def _extract_page_text(page: fitz.Page) -> str:
     structured_lines = _extract_line_records(page)
     if not structured_lines:
-        return page.get_text("text")
+        raw = page.get_text("text")
+        return raw if isinstance(raw, str) else str(raw)
 
     output_lines: list[str] = []
     for text, is_bold in structured_lines:
@@ -150,19 +180,27 @@ def _title_from_raw_text(raw_text: str) -> str:
 
 
 def _scholarly_lookup(title: str) -> dict[str, Any]:
-    try:
-        try:
-            pub = scholarly.scholarly.search_single_pub(title, filled=True)
-            if pub:
-                return pub
-        except Exception:
-            pass
+    if not _scholarly_enabled():
+        return {}
+    if not _is_reasonable_lookup_title(title):
+        return {}
 
-        search_query = scholarly.scholarly.search_pubs(title)
-        pub = next(search_query, None)
-        return pub or {}
+    try:
+        # Scholarly internally drives a local webdriver/session, which is fragile when
+        # multiple parser tasks run at once. Serialize calls to reduce connection resets.
+        with _SCHOLARLY_LOCK:
+            try:
+                pub = scholarly.scholarly.search_single_pub(title, filled=True)
+                if isinstance(pub, dict) and pub:
+                    return pub
+            except Exception:
+                pass
+
+            search_query = scholarly.scholarly.search_pubs(title)
+            pub = next(search_query, None)
+            return pub if isinstance(pub, dict) else {}
     except Exception as exc:
-        logger.warning(f"Scholarly lookup failed for {title}: {exc}")
+        logger.info(f"Scholarly lookup skipped/failed for title '{title[:80]}': {exc}")
         return {}
 
 
@@ -252,18 +290,18 @@ class AcademicPDFParser:
         raw_text = ""
 
         try:
-            doc = fitz.open(self.file_path)
-            for page in doc:
-                page_text = _extract_page_text(page)
-                if len(page_text.strip()) < 200 and os.environ.get("PAPERMIND_ENABLE_OCR", "true").lower() == "true":
-                    self.is_ocr = True
-                    pix = page.get_pixmap()
-                    if pix.alpha:
-                        img = Image.frombytes("RGBA", [pix.width, pix.height], pix.samples)
-                    else:
-                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                    page_text = pytesseract.image_to_string(img)
-                raw_text += page_text + "\n"
+            with fitz.open(self.file_path) as doc:
+                for page in doc:
+                    page_text = _extract_page_text(page)
+                    if len(page_text.strip()) < 200 and os.environ.get("PAPERMIND_ENABLE_OCR", "true").lower() == "true":
+                        self.is_ocr = True
+                        pix = page.get_pixmap()
+                        if pix.alpha:
+                            img = Image.frombytes("RGBA", (pix.width, pix.height), pix.samples)
+                        else:
+                            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                        page_text = pytesseract.image_to_string(img)
+                    raw_text += page_text + "\n"
         except Exception as e:
             logger.error(f"Failed to extract text from PDF {self.file_path}: {e}")
 
@@ -287,7 +325,7 @@ class AcademicPDFParser:
                             year = date_parts[0][0]
                     abstract = pub.get("abstract", None)
             except Exception as e:
-                logger.error(f"Crossref lookup failed for DOI {doi}: {e}")
+                logger.info(f"Crossref lookup failed for DOI {doi}: {e}")
 
         if title == "Unknown Title" or not authors or year is None or abstract is None:
             fallback_title = title if title != "Unknown Title" else _title_from_raw_text(raw_text)

@@ -1,23 +1,28 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List
 from loguru import logger
 from pathlib import Path
 import asyncio
 
 from papermind.models import AcademicPaper, Atom
 from papermind.atoms.chunker import chunk_paper_into_atoms
+from papermind.services.embedder_service import EmbedderService
 from papermind.parsers.academic_pdf_parser import AcademicPDFParser
 from open_notebook.domain.notebook import Source
-from open_notebook.database.repository import repo_query, ensure_record_id
+from open_notebook.database.repository import ensure_record_id
 
 router = APIRouter(prefix="/papermind", tags=["papermind-atoms"])
+
+embedder_service = EmbedderService()
 
 class AtomizeRequest(BaseModel):
     paper_id: str
 
 class AtomizeResponse(BaseModel):
     atom_count: int
+    embedded_count: int = 0
+    similarity_edge_count: int = 0
 
 class AtomResponse(BaseModel):
     id: str
@@ -26,7 +31,7 @@ class AtomResponse(BaseModel):
 
 
 @router.post("/atomize", response_model=AtomizeResponse)
-async def create_atoms(req: AtomizeRequest, background_tasks: BackgroundTasks):
+async def create_atoms(req: AtomizeRequest):
     try:
         paper = await AcademicPaper.get(req.paper_id)
         if not paper:
@@ -52,9 +57,14 @@ async def create_atoms(req: AtomizeRequest, background_tasks: BackgroundTasks):
             a.paper_id = ensure_record_id(str(a.paper_id))
             await a.save()
             saved_atoms.append(a)
+
+        embedded_count = await embedder_service.embed_atoms(saved_atoms)
+        similarity_edge_count = await embedder_service.build_similarity_edges(req.paper_id)
         
         return AtomizeResponse(
-                atom_count=len(saved_atoms),
+            atom_count=len(saved_atoms),
+            embedded_count=embedded_count,
+            similarity_edge_count=similarity_edge_count,
         )
     except Exception as e:
         logger.exception("Failed to atomize paper")

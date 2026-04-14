@@ -17,10 +17,17 @@ export interface GraphEdge {
     target: string;
     type: string;
     weight: number;
+    label?: string;
 }
 
 export interface GraphData {
     nodes: GraphNode[];
     links: GraphEdge[];
-    meta: any;
+    meta: {
+        paper_count: number;
+        concept_count: number;
+        concept_options?: string[];
+        edge_count: number;
+        generated_at: string;
+    };
 }

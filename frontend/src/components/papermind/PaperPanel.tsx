@@ -35,7 +35,7 @@ export default function PaperPanel({
     });
 
     return (
-        <div className="h-full w-full flex flex-col bg-background/95 backdrop-blur-md">
+        <div className="h-full w-full min-h-0 flex flex-col bg-background/95 backdrop-blur-md">
             {/* Header */}
             <div className="flex-none p-4 pb-2 border-b flex justify-between items-start gap-4">
                 <div>
@@ -54,84 +54,86 @@ export default function PaperPanel({
             </div>
 
             {/* Main Content Area */}
-            <ScrollArea className="flex-1 p-4 px-6 pt-6">
-                <div className="flex flex-col gap-6">
-                    {paperNode.doi && (
-                        <a
-                            href={`https://doi.org/${paperNode.doi}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-xs text-blue-500 hover:underline flex items-center gap-1"
-                        >
-                            <ExternalLink className="h-3 w-3" /> doi.org/{paperNode.doi}
-                        </a>
-                    )}
+            <div className="flex-1 min-h-0">
+                <ScrollArea className="h-full">
+                    <div className="p-4 px-6 pt-6 flex flex-col gap-6">
+                        {paperNode.doi && (
+                            <a
+                                href={`https://doi.org/${paperNode.doi}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-xs text-blue-500 hover:underline flex items-center gap-1"
+                            >
+                                <ExternalLink className="h-3 w-3" /> doi.org/{paperNode.doi}
+                            </a>
+                        )}
 
-                    {/* Fallback tags from graph concepts (while loading AI note or if no AI note) */}
-                    {paperNode.concepts && (
-                        <div className="flex flex-wrap gap-2">
-                            {paperNode.concepts.map((c) => (
-                                <Badge
-                                    key={c}
-                                    variant="secondary"
-                                    className="cursor-pointer hover:bg-muted"
-                                    onClick={() => onConceptClick(c)}
-                                >
-                                    {c.replace("concept:", "").replace("_", " ")}
-                                </Badge>
-                            ))}
-                        </div>
-                    )}
-
-                    {isLoading ? (
-                        <div className="flex flex-col items-center justify-center p-8 text-muted-foreground gap-3">
-                            <Loader2 className="animate-spin" />
-                            <span className="text-sm">Loading generated AI note...</span>
-                        </div>
-                    ) : error ? (
-                        <div className="text-destructive text-sm p-4 border border-destructive/20 rounded bg-destructive/10">
-                            Note generation failed: {String(error)}
-                        </div>
-                    ) : aiNote ? (
-                        <div className="flex flex-col gap-6 text-sm">
-                            <div className="bg-muted/40 p-4 rounded-xl text-primary/90 font-medium italic border leading-relaxed">
-                                "{aiNote.one_line_summary}"
+                        {/* Fallback tags from graph concepts (while loading AI note or if no AI note) */}
+                        {paperNode.concepts && (
+                            <div className="flex flex-wrap gap-2">
+                                {paperNode.concepts.map((c) => (
+                                    <Badge
+                                        key={c}
+                                        variant="secondary"
+                                        className="cursor-pointer hover:bg-muted"
+                                        onClick={() => onConceptClick(c)}
+                                    >
+                                        {c.replace("concept:", "").replace("_", " ")}
+                                    </Badge>
+                                ))}
                             </div>
+                        )}
 
-                            <div>
-                                <h4 className="font-semibold text-foreground border-b pb-1 mb-3">Key Findings</h4>
-                                <ul className="list-disc pl-5 space-y-1.5 text-muted-foreground marker:text-muted-foreground/60">
-                                    {aiNote.key_findings?.map((f: string, i: number) => (
-                                        <li key={i}>{f}</li>
-                                    ))}
-                                </ul>
+                        {isLoading ? (
+                            <div className="flex flex-col items-center justify-center p-8 text-muted-foreground gap-3">
+                                <Loader2 className="animate-spin" />
+                                <span className="text-sm">Loading generated AI note...</span>
                             </div>
-
-                            <div>
-                                <h4 className="font-semibold text-foreground border-b pb-1 mb-3">Methodology</h4>
-                                <p className="text-muted-foreground leading-relaxed">{aiNote.methodology}</p>
+                        ) : error ? (
+                            <div className="text-destructive text-sm p-4 border border-destructive/20 rounded bg-destructive/10">
+                                Note generation failed: {String(error)}
                             </div>
+                        ) : aiNote ? (
+                            <div className="flex flex-col gap-6 text-sm">
+                                <div className="bg-muted/40 p-4 rounded-xl text-primary/90 font-medium italic border leading-relaxed">
+                                    "{aiNote.one_line_summary}"
+                                </div>
 
-                            {aiNote.limitations && aiNote.limitations.length > 0 && (
                                 <div>
-                                    <h4 className="font-semibold text-foreground border-b pb-1 mb-3">Limitations</h4>
+                                    <h4 className="font-semibold text-foreground border-b pb-1 mb-3">Key Findings</h4>
                                     <ul className="list-disc pl-5 space-y-1.5 text-muted-foreground marker:text-muted-foreground/60">
-                                        {aiNote.limitations.map((l: string, i: number) => (
-                                            <li key={i}>{l}</li>
+                                        {aiNote.key_findings?.map((f: string, i: number) => (
+                                            <li key={i}>{f}</li>
                                         ))}
                                     </ul>
                                 </div>
-                            )}
-                        </div>
-                    ) : (
-                        <div className="text-muted-foreground text-sm p-4 italic">
-                            No AI Note generated yet. Try rebuilding the graph or triggering /api/papermind/generate_note.
-                        </div>
-                    )}
 
-                    <div className="pb-8"></div>
-                </div>
-            </ScrollArea>
+                                <div>
+                                    <h4 className="font-semibold text-foreground border-b pb-1 mb-3">Methodology</h4>
+                                    <p className="text-muted-foreground leading-relaxed">{aiNote.methodology}</p>
+                                </div>
+
+                                {aiNote.limitations && aiNote.limitations.length > 0 && (
+                                    <div>
+                                        <h4 className="font-semibold text-foreground border-b pb-1 mb-3">Limitations</h4>
+                                        <ul className="list-disc pl-5 space-y-1.5 text-muted-foreground marker:text-muted-foreground/60">
+                                            {aiNote.limitations.map((l: string, i: number) => (
+                                                <li key={i}>{l}</li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div className="text-muted-foreground text-sm p-4 italic">
+                                No AI Note generated yet. Try rebuilding the graph or triggering /api/papermind/generate_note.
+                            </div>
+                        )}
+
+                        <div className="pb-8"></div>
+                    </div>
+                </ScrollArea>
+            </div>
 
             {/* Footer controls */}
             <div className="flex-none p-4 mt-auto border-t bg-muted/20">

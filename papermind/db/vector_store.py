@@ -4,6 +4,7 @@ import sqlite_vec
 import numpy as np
 import struct
 from typing import List, Dict
+from loguru import logger
 
 class VectorStore:
     def __init__(self):
@@ -30,6 +31,13 @@ class VectorStore:
             
         if isinstance(embedding, list):
             embedding = np.array(embedding, dtype=np.float32)
+
+        embedding = embedding.reshape(-1)
+        if embedding.shape[0] != self.dim:
+            logger.warning(
+                f"Skipping vector upsert for {atom_id}: dimension {embedding.shape[0]} != expected {self.dim}"
+            )
+            return
             
         blob = embedding.tobytes()
             
@@ -48,44 +56,55 @@ class VectorStore:
     def find_similar(self, vector: np.ndarray | List[float], top_k: int = 10, threshold: float = 0.75, exclude_id: str = None) -> List[Dict]:
         if isinstance(vector, list):
             vector = np.array(vector, dtype=np.float32)
+
+        vector = vector.reshape(-1)
+        if vector.shape[0] != self.dim:
+            logger.warning(
+                f"Skipping similarity search: query dimension {vector.shape[0]} != expected {self.dim}"
+            )
+            return []
             
         blob = vector.tobytes()
             
-        with sqlite3.connect(self.db_path) as db:
-            db.enable_load_extension(True)
-            sqlite_vec.load(db)
-            db.enable_load_extension(False)
-            
-            cursor = db.cursor()
-            
-            if exclude_id:
-                cursor.execute(
-                    """
-                    SELECT id, vec_distance_cosine(embedding, ?) AS distance
-                    FROM vec_items
-                    WHERE id != ?
-                    ORDER BY distance ASC
-                    LIMIT ?
-                    """,
-                    (blob, exclude_id, top_k)
-                )
-            else:
-                cursor.execute(
-                    """
-                    SELECT id, vec_distance_cosine(embedding, ?) AS distance
-                    FROM vec_items
-                    ORDER BY distance ASC
-                    LIMIT ?
-                    """,
-                    (blob, top_k)
-                )
+        try:
+            with sqlite3.connect(self.db_path) as db:
+                db.enable_load_extension(True)
+                sqlite_vec.load(db)
+                db.enable_load_extension(False)
                 
-            results = []
-            for row in cursor.fetchall():
-                sim_score = 1.0 - float(row[1]) # cosine distance to similarity
-                if sim_score >= threshold:
-                    results.append({"id": row[0], "score": sim_score})
-            return results
+                cursor = db.cursor()
+                
+                if exclude_id:
+                    cursor.execute(
+                        """
+                        SELECT id, vec_distance_cosine(embedding, ?) AS distance
+                        FROM vec_items
+                        WHERE id != ?
+                        ORDER BY distance ASC
+                        LIMIT ?
+                        """,
+                        (blob, exclude_id, top_k)
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT id, vec_distance_cosine(embedding, ?) AS distance
+                        FROM vec_items
+                        ORDER BY distance ASC
+                        LIMIT ?
+                        """,
+                        (blob, top_k)
+                    )
+                    
+                results = []
+                for row in cursor.fetchall():
+                    sim_score = 1.0 - float(row[1]) # cosine distance to similarity
+                    if sim_score >= threshold:
+                        results.append({"id": row[0], "score": sim_score})
+                return results
+        except Exception as e:
+            logger.warning(f"Similarity search failed due to vector store error: {e}")
+            return []
 
     def delete(self, atom_id: str) -> None:
         with sqlite3.connect(self.db_path) as db:

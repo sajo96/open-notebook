@@ -10,6 +10,7 @@ async def build_similarity_edges(paper_id: str, threshold: float = 0.75):
     3. Filter out atoms from same section in same paper
     4. Create RELATE atom_a -> similar_to -> atom_b in SurrealDB
     """
+    edge_count = 0
     try:
         atoms = await Atom.get_all()
         # Filter for our paper manually for now if surreal query isn't directly matching object
@@ -18,13 +19,17 @@ async def build_similarity_edges(paper_id: str, threshold: float = 0.75):
         for atom in paper_atoms:
             if not atom.embedding:
                 continue
-                
-            similar_items = vector_store.find_similar(
-                vector=atom.embedding, 
-                top_k=10, 
-                threshold=threshold,
-                exclude_id=str(atom.id)
-            )
+
+            try:
+                similar_items = vector_store.find_similar(
+                    vector=atom.embedding,
+                    top_k=10,
+                    threshold=threshold,
+                    exclude_id=str(atom.id),
+                )
+            except Exception as e:
+                logger.warning(f"Skipping similarity search for atom {atom.id}: {e}")
+                continue
             
             for item in similar_items:
                 target_id = item["id"]
@@ -42,5 +47,7 @@ async def build_similarity_edges(paper_id: str, threshold: float = 0.75):
                 logger.info(f"Creating edge {atom.id} -> {target_id} score {score}")
                 await repo_query(f"RELATE {atom.id} -> similar_to -> {target_id} SET similarity_score = {score};")
                 await repo_query(f"RELATE {target_id} -> similar_to -> {atom.id} SET similarity_score = {score};")
+                edge_count += 2
     except Exception as e:
         logger.error(f"Failed to build similarity edges for {paper_id}: {e}")
+    return edge_count

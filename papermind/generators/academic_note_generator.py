@@ -1,12 +1,13 @@
 import yaml
 import json
+import re
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional, Any, Dict
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from open_notebook.ai.provision import provision_langchain_model
-from open_notebook.database.repository import repo_query
+from open_notebook.database.repository import repo_query, ensure_record_id
 from open_notebook.domain.notebook import Note
 from papermind.models import AcademicPaper, Concept
 
@@ -36,7 +37,116 @@ class AcademicNoteGenerator:
         self.system_prompt = data.get("system", "")
         self.sections = data.get("sections", {})
 
-    async def _call_llm_for_section(self, section_name: str, paper: AcademicPaper, section_config: dict) -> Any:
+    @staticmethod
+    def _normalize_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+
+    def _section_text(self, paper: AcademicPaper, *aliases: str, limit: int = 4000) -> str:
+        sections = paper.sections if isinstance(paper.sections, dict) else {}
+        if not sections:
+            return ""
+
+        normalized = {
+            self._normalize_key(str(k)): str(v or "").strip()
+            for k, v in sections.items()
+            if str(v or "").strip()
+        }
+
+        for alias in aliases:
+            key = self._normalize_key(alias)
+            value = normalized.get(key, "")
+            if value:
+                return value[:limit]
+
+        # Fallback to full text sections when explicit headings are unavailable.
+        for key in ("full_text", "summary", "frontmatter"):
+            value = normalized.get(key, "")
+            if value:
+                return value[:limit]
+        return ""
+
+    @staticmethod
+    def _clean_llm_text(text: str) -> str:
+        cleaned = (text or "").strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _split_sentences(text: str) -> List[str]:
+        parts = re.split(r"(?<=[.!?])\s+", (text or "").strip())
+        return [p.strip() for p in parts if p and len(p.strip()) > 20]
+
+    def _fallback_output(self, section_name: str, text: str, title: str) -> Any:
+        text = (text or "").strip()
+        sentences = self._split_sentences(text)
+
+        if section_name == "one_line_summary":
+            if sentences:
+                return " ".join(sentences[0].split()[:30])
+            return title or "Summary unavailable."
+
+        if section_name == "key_findings":
+            if sentences:
+                return sentences[: min(5, len(sentences))]
+            return ["No key findings available."]
+
+        if section_name == "methodology":
+            method_hits = [
+                s for s in sentences
+                if re.search(r"\b(method|dataset|experiment|evaluate|approach|model)\b", s, re.IGNORECASE)
+            ]
+            if method_hits:
+                return " ".join(method_hits[:2])
+            if sentences:
+                return " ".join(sentences[:2])
+            return "Methodology details unavailable."
+
+        if section_name == "limitations":
+            limitation_hits = [
+                s for s in sentences
+                if re.search(r"\b(limit|future work|constraint|weakness)\b", s, re.IGNORECASE)
+            ]
+            if limitation_hits:
+                return limitation_hits[:3]
+            return ["Limitations not explicitly stated in source text."]
+
+        if section_name == "concepts":
+            tokens = re.findall(r"[A-Za-z][A-Za-z0-9\-]{3,}", text)
+            concepts: List[str] = []
+            seen = set()
+            stop = {
+                "this", "that", "with", "from", "have", "were", "their", "paper", "study",
+                "using", "results", "method", "methods", "introduction", "conclusion",
+            }
+            for tok in tokens:
+                key = tok.lower()
+                if key in stop or key in seen:
+                    continue
+                seen.add(key)
+                concepts.append(tok)
+                if len(concepts) >= 8:
+                    break
+            return concepts
+
+        return ""
+
+    def _paper_fallback_text(self, paper: AcademicPaper, limit: int = 4000) -> str:
+        sections = paper.sections if isinstance(paper.sections, dict) else {}
+        joined_sections = "\n".join(
+            str(v or "").strip() for v in sections.values() if str(v or "").strip()
+        )
+        candidate = "\n".join([paper.abstract or "", joined_sections]).strip()
+        return candidate[:limit]
+
+    async def _call_llm_for_section(
+        self,
+        section_name: str,
+        paper: AcademicPaper,
+        section_config: dict,
+        supplemental_text: str,
+    ) -> Any:
         prompt_template = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
             ("user", section_config["prompt"])
@@ -46,31 +156,35 @@ class AcademicNoteGenerator:
         variables = {}
         target_content = ""
         if section_name == "one_line_summary":
-            intro = paper.sections.get("Introduction", "")[:2000]
-            abstract = paper.abstract or ""
+            intro = self._section_text(paper, "introduction", "background", limit=2000)
+            abstract = (paper.abstract or self._section_text(paper, "abstract", limit=2000)).strip()
             target_content = intro + abstract
             variables = {
                 "abstract": abstract,
                 "introduction_excerpt": intro
             }
         elif section_name == "key_findings":
-            results = paper.sections.get("Results", "")
-            conclusion = paper.sections.get("Conclusion", "")
+            results = self._section_text(paper, "results", limit=3000)
+            conclusion = self._section_text(paper, "conclusion", limit=1500)
             target_content = results + conclusion
             variables = {
                 "results_and_conclusion": target_content[:4000]
             }
         elif section_name == "methodology":
-            methods = paper.sections.get("Methods", "")
-            if not methods:
-                methods = paper.sections.get("Methodology", "")
+            methods = self._section_text(
+                paper,
+                "methods",
+                "methodology",
+                "materials and methods",
+                limit=4000,
+            )
             target_content = methods
             variables = {
                 "methods": target_content[:4000]
             }
         elif section_name == "limitations":
-            discussion = paper.sections.get("Discussion", "")
-            conclusion = paper.sections.get("Conclusion", "")
+            discussion = self._section_text(paper, "discussion", limit=3000)
+            conclusion = self._section_text(paper, "conclusion", limit=1500)
             target_content = discussion + conclusion
             variables = {
                 "discussion_and_conclusion": target_content[:4000]
@@ -78,10 +192,10 @@ class AcademicNoteGenerator:
         elif section_name == "concepts":
             # Extract a broad excerpt for concept extraction
             excerpt_parts = [
-                paper.abstract or "",
-                paper.sections.get("Introduction", "")[:1000],
-                paper.sections.get("Methods", "")[:1000],
-                paper.sections.get("Conclusion", "")[:1000]
+                (paper.abstract or self._section_text(paper, "abstract", limit=1000)),
+                self._section_text(paper, "introduction", "background", limit=1000),
+                self._section_text(paper, "methods", "methodology", limit=1000),
+                self._section_text(paper, "conclusion", limit=1000),
             ]
             target_content = "\n".join(excerpt_parts)
             variables = {
@@ -89,6 +203,25 @@ class AcademicNoteGenerator:
             }
         else:
             raise ValueError(f"Unknown section: {section_name}")
+
+        if not target_content.strip():
+            target_content = (supplemental_text or self._paper_fallback_text(paper, limit=4000)).strip()
+            if section_name == "one_line_summary":
+                variables = {
+                    "abstract": target_content[:1800],
+                    "introduction_excerpt": target_content[:1800],
+                }
+            elif section_name == "key_findings":
+                variables = {"results_and_conclusion": target_content[:4000]}
+            elif section_name == "methodology":
+                variables = {"methods": target_content[:4000]}
+            elif section_name == "limitations":
+                variables = {"discussion_and_conclusion": target_content[:4000]}
+            elif section_name == "concepts":
+                variables = {"full_text_excerpt": target_content[:4000]}
+
+            if not target_content:
+                return self._fallback_output(section_name, "", paper.title or "")
 
         # Provision LLM using open notebook's native mechanism
         llm = await provision_langchain_model(
@@ -104,9 +237,42 @@ class AcademicNoteGenerator:
             return result
         except Exception as e:
             print(f"Failed to generate section {section_name}: {str(e)}")
-            # Return fallback empty state
-            if section_name in ["key_findings", "limitations", "concepts"]:
-                return []
+            # Retry once without strict JSON parsing and recover best-effort output.
+            try:
+                messages = prompt_template.format_messages(**variables)
+                raw_response = await llm.ainvoke(messages)
+                raw_text = self._clean_llm_text(getattr(raw_response, "content", str(raw_response)))
+                try:
+                    parsed = json.loads(raw_text)
+                    return parsed
+                except Exception:
+                    pass
+
+                if section_name in ["key_findings", "limitations", "concepts"]:
+                    bullet_lines = [
+                        re.sub(r"^[-*\d\.)\s]+", "", line).strip()
+                        for line in raw_text.splitlines()
+                        if line.strip()
+                    ]
+                    if bullet_lines:
+                        return bullet_lines[:10]
+                elif raw_text:
+                    return raw_text
+            except Exception:
+                pass
+
+            return self._fallback_output(section_name, target_content, paper.title or "")
+
+    async def _source_full_text(self, paper: AcademicPaper) -> str:
+        try:
+            source_id = getattr(paper, "source_id", None)
+            if not source_id:
+                return ""
+            rows = await repo_query("SELECT full_text FROM $id", {"id": ensure_record_id(str(source_id))})
+            if rows and isinstance(rows[0], dict):
+                return str(rows[0].get("full_text") or "").strip()
+            return ""
+        except Exception:
             return ""
 
     async def generate_note(self, paper: AcademicPaper) -> GeneratedNote:
@@ -121,11 +287,25 @@ class AcademicNoteGenerator:
         7. Create/link Concept records for extracted concepts
         """
         # Run generations in parallel or sequentially. We will do sequentially to respect rate limits if any
-        one_line_summary = await self._call_llm_for_section("one_line_summary", paper, self.sections["one_line_summary"])
-        key_findings = await self._call_llm_for_section("key_findings", paper, self.sections["key_findings"])
-        methodology = await self._call_llm_for_section("methodology", paper, self.sections["methodology"])
-        limitations = await self._call_llm_for_section("limitations", paper, self.sections["limitations"])
-        concepts = await self._call_llm_for_section("concepts", paper, self.sections["concepts"])
+        supplemental_text = self._paper_fallback_text(paper, limit=4000)
+        if not supplemental_text:
+            supplemental_text = await self._source_full_text(paper)
+
+        one_line_summary = await self._call_llm_for_section(
+            "one_line_summary", paper, self.sections["one_line_summary"], supplemental_text
+        )
+        key_findings = await self._call_llm_for_section(
+            "key_findings", paper, self.sections["key_findings"], supplemental_text
+        )
+        methodology = await self._call_llm_for_section(
+            "methodology", paper, self.sections["methodology"], supplemental_text
+        )
+        limitations = await self._call_llm_for_section(
+            "limitations", paper, self.sections["limitations"], supplemental_text
+        )
+        concepts = await self._call_llm_for_section(
+            "concepts", paper, self.sections["concepts"], supplemental_text
+        )
 
         # Ensure types are correct
         if isinstance(one_line_summary, dict) and "one_line_summary" in one_line_summary:
@@ -156,15 +336,24 @@ class AcademicNoteGenerator:
             note_type="ai",
             content=content_md
         )
-        note_id = await note.save()
+        _ = await note.save()
+        note_id = str(note.id) if note.id else None
+        if not note_id:
+            raise RuntimeError("Failed to persist generated note record")
         
         # Link note to the notebook and paper using reference edges
         notebook_id = getattr(paper.source_id, "notebook_id", "") if hasattr(paper.source_id, "notebook_id") else ""
         if notebook_id:
-            await repo_query("RELATE type::thing($in) -> reference -> type::thing($out)", {"in": notebook_id, "out": note_id})
+            await note.add_to_notebook(str(notebook_id))
         
         if paper.id:
-             await repo_query("RELATE type::thing($in) -> refer -> type::thing($out)", {"in": paper.id, "out": note_id})
+            await repo_query(
+                "RELATE $in -> refer -> $out",
+                {
+                    "in": ensure_record_id(str(paper.id)),
+                    "out": ensure_record_id(note_id),
+                },
+            )
 
         # 7. Create/link Concept records
         for concept_label in concepts:
@@ -173,13 +362,16 @@ class AcademicNoteGenerator:
             concept_id = f"concept:{slug}"
             try:
                 await repo_query(
-                    "UPDATE type::thing($id) SET label = $label, created_at = time::now()", 
-                    {"id": concept_id, "label": concept_label.strip()}
+                    "UPDATE $id SET label = $label, created_at = time::now()", 
+                    {"id": ensure_record_id(concept_id), "label": concept_label.strip()}
                 )
                 if paper.id:
                     await repo_query(
-                        "RELATE type::thing($in) -> tagged_with -> type::thing($out)",
-                        {"in": paper.id, "out": concept_id}
+                        "RELATE $in -> tagged_with -> $out",
+                        {
+                            "in": ensure_record_id(str(paper.id)),
+                            "out": ensure_record_id(concept_id),
+                        }
                     )
             except Exception as e:
                 print(f"Failed linking concept {concept_label}: {e}")

@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel
 from urllib.parse import unquote
 from loguru import logger
+import re
 
 from open_notebook.database.repository import repo_query, ensure_record_id
 
@@ -24,10 +25,12 @@ class GraphEdge(BaseModel):
     target: str
     type: str # "cites" | "similar_to" | "tagged_with" | "authored_by" | "contains"
     weight: float
+    label: Optional[str] = None
 
 class GraphMeta(BaseModel):
     paper_count: int
     concept_count: int
+    concept_options: List[str] = []
     edge_count: int
     generated_at: datetime
 
@@ -98,6 +101,76 @@ def _count_as_int(value: Any) -> int:
             return int(nested)
     return 0
 
+
+_NOISY_CONCEPT_TERMS = {
+    "journal",
+    "issn",
+    "volume",
+    "issue",
+    "abstract",
+    "introduction",
+    "conclusion",
+    "discussion",
+    "methodology",
+    "methods",
+    "result",
+    "results",
+    "limitation",
+    "limitations",
+    "paper",
+    "study",
+    "http",
+    "https",
+    "site",
+    "sites",
+    "march",
+    "computing",
+}
+
+
+def _canonical_concept_key(value: str) -> str:
+    raw = (value or "").replace("concept:", "").strip().lower()
+    raw = raw.replace("_", " ").replace("-", " ").replace("/", " ")
+    key = re.sub(r"[^a-z0-9\s]+", " ", raw)
+    key = re.sub(r"\s+", " ", key).strip()
+
+    # Normalize common lexical variants that otherwise split concept nodes.
+    key = key.replace("hearing aid", "hearing aid")
+    key = key.replace("auditory peripheral", "auditory periphery")
+    key = key.replace("long term", "longterm")
+
+    if key.endswith("s") and len(key) > 5:
+        key = key[:-1]
+    return key
+
+
+def _is_noisy_concept_key(key: str) -> bool:
+    if not key or len(key) < 3:
+        return True
+    if key in _NOISY_CONCEPT_TERMS:
+        return True
+    if re.search(r"\b(issn|journal|volume|issue)\b", key):
+        return True
+    # Mostly numeric/metadata-like labels are not useful graph concepts.
+    alnum = re.sub(r"[^a-z0-9]", "", key)
+    if alnum and sum(ch.isdigit() for ch in alnum) / len(alnum) > 0.45:
+        return True
+    return False
+
+
+def _canonical_concept_id(value: str) -> Optional[str]:
+    key = _canonical_concept_key(value)
+    if _is_noisy_concept_key(key):
+        return None
+    return f"concept:{key.replace(' ', '_')}"
+
+
+def _concept_label_from_id(concept_id: str) -> str:
+    key = _canonical_concept_key(concept_id)
+    if not key:
+        return "Concept"
+    return " ".join(part.capitalize() for part in key.split())
+
 @router.get("/graph/{notebook_id}", response_model=GraphResponse)
 async def get_notebook_graph(
     notebook_id: str,
@@ -106,6 +179,7 @@ async def get_notebook_graph(
     max_atoms: int = Query(4000, ge=100, le=50000, description="cap atom ids used for similarity scan"),
     include_concepts: bool = Query(True, description="include concept nodes"),
     include_authors: bool = Query(False, description="include author nodes"),
+    min_shared_concepts: int = Query(2, ge=1, le=10, description="minimum shared concepts required for concept_similarity edge"),
     year_from: Optional[int] = Query(None, description="Starting year"),
     year_to: Optional[int] = Query(None, description="Ending year"),
     concept_filter: Optional[str] = Query(None, description="filter to papers tagged with this concept")
@@ -157,19 +231,36 @@ async def get_notebook_graph(
         """
         plain_sources_result = await repo_query(sources_query, {"notebook_id": nb_record_id})
         plain_sources = _rows_from_query_result(plain_sources_result)
+        source_title_by_id: Dict[str, str] = {}
+        for src in plain_sources:
+            src_id = _record_id_str(src.get("id"))
+            src_title = str(src.get("title") or "").strip()
+            if src_id and src_title:
+                source_title_by_id[src_id] = src_title
+
+        concept_catalog: set[str] = set()
+        for p in papers:
+            raw_concepts = _record_id_list(p.get("concepts", []))
+            for cid in (_canonical_concept_id(c) for c in raw_concepts):
+                if cid:
+                    concept_catalog.add(cid)
 
         if concept_filter:
             # If concept filter is applied, only keep papers that have the specified concept
             filtered_papers = []
-            filter_slug = concept_filter.strip().lower().replace(" ", "_")
-            concept_target = f"concept:{filter_slug}" if not concept_filter.startswith("concept:") else concept_filter
+            concept_target = _canonical_concept_id(concept_filter)
             for p in papers:
-                if "concepts" in p and concept_target in p["concepts"]:
+                raw_concepts = _record_id_list(p.get("concepts", []))
+                canonical_concepts = {
+                    cid for cid in (_canonical_concept_id(c) for c in raw_concepts) if cid
+                }
+                if concept_target and concept_target in canonical_concepts:
                     filtered_papers.append(p)
             papers = filtered_papers
 
         nodes_dict: Dict[str, GraphNode] = {}
         edges: List[GraphEdge] = []
+        paper_concepts_map: Dict[str, set[str]] = {}
 
         paper_count = 0
         concept_count = 0
@@ -182,19 +273,35 @@ async def get_notebook_graph(
                 continue
 
             concepts_list = _record_id_list(p.get("concepts", []))
+            canonical_concepts: List[str] = []
+            seen_concepts: set[str] = set()
+            for raw_concept in concepts_list:
+                canonical_id = _canonical_concept_id(raw_concept)
+                if not canonical_id or canonical_id in seen_concepts:
+                    continue
+                seen_concepts.add(canonical_id)
+                canonical_concepts.append(canonical_id)
+
             atom_list = p.get("atoms", [])
+            source_id = _record_id_str(p.get("source_id"))
+            paper_title = str(p.get("title") or "").strip()
+            if not paper_title or paper_title.lower() in {"unknown title", "unknown paper"}:
+                paper_title = source_title_by_id.get(source_id or "", "").strip()
+            if not paper_title:
+                paper_title = "Unknown Paper"
             
             # Paper Node
             nodes_dict[paper_id] = GraphNode(
                 id=paper_id,
                 type="paper",
-                label=p.get("title", "Unknown Paper"),
+                label=paper_title,
                 year=p.get("year"),
                 authors=p.get("authors", []),
                 doi=p.get("doi"),
                 atom_count=len(atom_list),
-                concepts=[c for c in concepts_list if c]
+                concepts=canonical_concepts,
             )
+            paper_concepts_map[paper_id] = set(canonical_concepts)
             paper_count += 1
 
             # Author Nodes
@@ -210,10 +317,9 @@ async def get_notebook_graph(
                     edges.append(GraphEdge(source=paper_id, target=author_id, type="authored_by", weight=1.0))
 
             # Concept Nodes
-            if include_concepts and concepts_list:
-                for c_id in concepts_list:
-                    if not c_id: continue
-                    label = c_id.replace("concept:", "").replace("_", " ").title()
+            if include_concepts and canonical_concepts:
+                for c_id in canonical_concepts:
+                    label = _concept_label_from_id(c_id)
                     if c_id not in nodes_dict:
                         nodes_dict[c_id] = GraphNode(
                             id=c_id,
@@ -222,6 +328,49 @@ async def get_notebook_graph(
                         )
                         concept_count += 1
                     edges.append(GraphEdge(source=paper_id, target=c_id, type="tagged_with", weight=1.0))
+
+        # Add semantic paper-to-paper edges based on shared concept tags.
+        paper_ids_for_concepts = sorted(paper_concepts_map.keys())
+        for i, p1 in enumerate(paper_ids_for_concepts):
+            c1 = paper_concepts_map.get(p1, set())
+            if not c1:
+                continue
+            for j in range(i + 1, len(paper_ids_for_concepts)):
+                p2 = paper_ids_for_concepts[j]
+                c2 = paper_concepts_map.get(p2, set())
+                if not c2:
+                    continue
+
+                overlap = sorted(c1 & c2)
+                if not overlap:
+                    continue
+                if len(overlap) < min_shared_concepts:
+                    continue
+
+                if concept_filter:
+                    concept_target = _canonical_concept_id(concept_filter)
+                    if concept_target and concept_target not in overlap:
+                        continue
+
+                overlap_labels = [
+                    _concept_label_from_id(cid)
+                    for cid in overlap[:3]
+                ]
+                label = ", ".join(overlap_labels)
+                if len(overlap) > 3:
+                    label += f" +{len(overlap) - 3}"
+
+                # Shared concepts are semantic signal; keep the edge visible and weighted by overlap size.
+                weight = min(1.0, 0.35 + 0.15 * len(overlap))
+                edges.append(
+                    GraphEdge(
+                        source=p1,
+                        target=p2,
+                        type="concept_similarity",
+                        weight=weight,
+                        label=label,
+                    )
+                )
 
             # Citations Edges
             cites_list = p.get("cited_papers", [])
@@ -353,6 +502,7 @@ async def get_notebook_graph(
             meta=GraphMeta(
                 paper_count=paper_count,
                 concept_count=concept_count,
+                concept_options=sorted(concept_catalog),
                 edge_count=len(edges),
                 generated_at=datetime.utcnow()
             )
