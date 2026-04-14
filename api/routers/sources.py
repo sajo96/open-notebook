@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 from pathlib import Path
 from typing import Any, List, Optional
@@ -68,6 +69,55 @@ def generate_unique_filename(original_filename: str, upload_folder: str) -> str:
         if not resolved.exists():
             return str(resolved)
         counter += 1
+
+
+async def get_file_md5(file_path: str) -> str:
+    """Compute MD5 hash of a file."""
+    loop = asyncio.get_event_loop()
+
+    def _compute():
+        hash_md5 = hashlib.md5()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+
+    return await loop.run_in_executor(None, _compute)
+
+
+async def _persist_source_file_hash(source_id: str, file_hash: str) -> None:
+    await repo_query(
+        "UPDATE type::thing($source_id) MERGE { file_hash: $file_hash }",
+        {"source_id": source_id, "file_hash": file_hash},
+    )
+
+
+async def _find_duplicate_source_by_hash(
+    file_hash: str, notebook_ids: list[str]
+) -> Optional[Source]:
+    if not notebook_ids:
+        return None
+
+    duplicate_result = await repo_query(
+        """
+        SELECT *
+        FROM source
+        WHERE file_hash = $file_hash
+          AND id IN (SELECT VALUE in FROM reference WHERE out IN $notebook_ids)
+        LIMIT 1
+        """,
+        {
+            "file_hash": file_hash,
+            "notebook_ids": [ensure_record_id(notebook_id) for notebook_id in notebook_ids],
+        },
+    )
+    if not duplicate_result or len(duplicate_result) == 0:
+        return None
+
+    first_row = duplicate_result[0]
+    if isinstance(first_row, dict):
+        return Source(**first_row)
+    return None
 
 
 async def save_uploaded_file(upload_file: UploadFile) -> str:
@@ -317,6 +367,45 @@ async def create_source(
                     status_code=400, detail=f"File upload failed: {str(e)}"
                 )
 
+        uploaded_file_hash: Optional[str] = None
+        if upload_file and source_data.type == "upload" and file_path:
+            uploaded_file_hash = await get_file_md5(file_path)
+            duplicate_source = await _find_duplicate_source_by_hash(
+                uploaded_file_hash,
+                source_data.notebooks or [],
+            )
+            if duplicate_source:
+                logger.info(
+                    f"Skipping duplicate uploaded file {file_path}; matching source {duplicate_source.id}"
+                )
+                if file_path and os.path.exists(file_path):
+                    try:
+                        os.unlink(file_path)
+                    except Exception:
+                        pass
+
+                embedded_chunks = await duplicate_source.get_embedded_chunks()
+                return SourceResponse(
+                    id=duplicate_source.id or "",
+                    title=duplicate_source.title,
+                    topics=duplicate_source.topics or [],
+                    asset=AssetModel(
+                        file_path=duplicate_source.asset.file_path
+                        if duplicate_source.asset
+                        else None,
+                        url=duplicate_source.asset.url if duplicate_source.asset else None,
+                    )
+                    if duplicate_source.asset
+                    else None,
+                    full_text=duplicate_source.full_text,
+                    embedded=embedded_chunks > 0,
+                    embedded_chunks=embedded_chunks,
+                    file_available=_is_source_file_available(duplicate_source),
+                    created=str(duplicate_source.created),
+                    updated=str(duplicate_source.updated),
+                    notebooks=[str(notebook_id) for notebook_id in source_data.notebooks or []],
+                )
+
         # Prepare content_state for processing
         content_state: dict[str, Any] = {}
 
@@ -385,6 +474,12 @@ async def create_source(
                 asset=source_asset,
             )
             await source.save()
+
+            if uploaded_file_hash:
+                try:
+                    await _persist_source_file_hash(str(source.id), uploaded_file_hash)
+                except Exception as e:
+                    logger.warning(f"Failed to save file_hash for source {source.id}: {e}")
 
             # Add source to notebooks immediately so it appears in the UI
             # The source_graph will skip adding duplicates
@@ -464,6 +559,12 @@ async def create_source(
                     topics=[],
                 )
                 await source.save()
+
+                if uploaded_file_hash:
+                    try:
+                        await _persist_source_file_hash(str(source.id), uploaded_file_hash)
+                    except Exception as e:
+                        logger.warning(f"Failed to save file_hash for source {source.id}: {e}")
 
                 # Add source to notebooks immediately so it appears in the UI
                 # The source_graph will skip adding duplicates
