@@ -5,7 +5,6 @@ import os
 from loguru import logger
 from pydantic import BaseModel
 from surreal_commands import CommandInput, CommandOutput, command
-import httpx
 
 from open_notebook.database.repository import ensure_record_id
 from open_notebook.domain.notebook import Source
@@ -46,59 +45,6 @@ class SourceProcessingOutput(CommandOutput):
     insights_created: int = 0
     processing_time: float
     error_message: Optional[str] = None
-
-
-async def _trigger_papermind_pipeline(source: Source) -> None:
-    """Trigger PaperMind parse/atomize for PDF sources. Non-fatal on failure."""
-    file_path = source.asset.file_path if source.asset else None
-    if not file_path or not file_path.lower().endswith(".pdf"):
-        return
-
-    source_id = str(source.id or "")
-    if not source_id:
-        return
-
-    api_base = os.environ.get("PAPERMIND_API_BASE", "http://localhost:5055")
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            parse_res = await client.post(
-                f"{api_base}/api/papermind/parse_academic",
-                json={"source_id": source_id},
-            )
-            if parse_res.status_code >= 400:
-                logger.warning(
-                    f"PaperMind parse skipped for {source_id}: "
-                    f"HTTP {parse_res.status_code} {parse_res.text}"
-                )
-                return
-
-            payload = parse_res.json() if parse_res.text else {}
-            paper_id = payload.get("academic_paper_id") if isinstance(payload, dict) else None
-            if not paper_id:
-                return
-
-            atomize_res = await client.post(
-                f"{api_base}/api/papermind/atomize",
-                json={"paper_id": paper_id},
-            )
-            if atomize_res.status_code >= 400:
-                logger.warning(
-                    f"PaperMind atomize skipped for {paper_id}: "
-                    f"HTTP {atomize_res.status_code} {atomize_res.text}"
-                )
-                return
-
-            note_res = await client.post(
-                f"{api_base}/api/papermind/generate_note",
-                json={"paper_id": paper_id, "regenerate": False},
-            )
-            if note_res.status_code >= 400:
-                logger.warning(
-                    f"PaperMind note generation skipped for {paper_id}: "
-                    f"HTTP {note_res.status_code} {note_res.text}"
-                )
-    except Exception as e:
-        logger.warning(f"PaperMind pipeline trigger failed for source {source_id}: {e}")
 
 
 @command(
@@ -176,8 +122,7 @@ async def process_source_command(
         insights_list = await processed_source.get_insights()
         insights_created = len(insights_list)
 
-        # Ensure PDF sources automatically flow into PaperMind graph entities.
-        await _trigger_papermind_pipeline(processed_source)
+        # BYPASSED: PaperMind now uses /api/papermind/ingest as a single entrypoint.
 
         processing_time = time.time() - start_time
         embed_status = "submitted" if input_data.embed else "skipped"

@@ -3,13 +3,12 @@ import re
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from loguru import logger
-import httpx
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 from papermind.models import AcademicPaper
 from papermind.parsers.academic_pdf_parser import AcademicPDFParser
+from open_notebook.domain.notebook import Source
 from open_notebook.database.repository import ensure_record_id, repo_query
 
 router = APIRouter(prefix="/papermind/parse_academic", tags=["papermind-parser"])
@@ -85,17 +84,11 @@ def _rows_from_query_result(query_result: Any) -> list[dict[str, Any]]:
 @router.post("", response_model=ParseResponse)
 async def parse_academic_paper(req: ParseRequest, background_tasks: BackgroundTasks):
     try:
-        # Load the source file path from DB by calling existing API
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            source_res = await client.get(f"{API_BASE}/api/sources/{quote(req.source_id, safe='')}")
-            if source_res.status_code >= 400:
-                raise HTTPException(status_code=404, detail="Source not found")
-            source_data = source_res.json()
+        source = await Source.get(req.source_id)
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
 
-        asset_data = source_data.get("asset") if isinstance(source_data, dict) else None
-        file_path = source_data.get("file_path") if isinstance(source_data, dict) else None
-        if not file_path and isinstance(asset_data, dict):
-            file_path = asset_data.get("file_path")
+        file_path = source.asset.file_path if source.asset else None
 
         if not file_path or not Path(file_path).exists():
              raise HTTPException(status_code=400, detail="Source file path is invalid or missing.")

@@ -64,17 +64,31 @@ class TestAsyncSourceAssetPersistence:
         assert source.asset.file_path is None
 
     @pytest.mark.asyncio
+    @patch("api.routers.sources._find_duplicate_source_by_file_contents", new_callable=AsyncMock)
+    @patch("api.routers.sources._find_duplicate_source_by_hash", new_callable=AsyncMock)
+    @patch("api.routers.sources.get_file_md5", new_callable=AsyncMock)
     @patch("api.routers.sources.CommandService.submit_command_job", new_callable=AsyncMock)
     @patch("api.routers.sources.Source.add_to_notebook", new_callable=AsyncMock)
     @patch("api.routers.sources.Notebook.get", new_callable=AsyncMock)
     @patch("api.routers.sources.save_uploaded_file", new_callable=AsyncMock)
     async def test_async_upload_source_persists_file_asset(
-        self, mock_upload, mock_nb_get, mock_add_nb, mock_submit, client
+        self,
+        mock_upload,
+        mock_nb_get,
+        mock_add_nb,
+        mock_submit,
+        mock_get_file_md5,
+        mock_find_duplicate_hash,
+        mock_find_duplicate_contents,
+        client,
     ):
         """POST /sources with type=upload and async_processing=true persists Asset(file_path=...)."""
         mock_nb_get.return_value = MagicMock()
         mock_upload.return_value = os.path.join(os.path.abspath(UPLOADS_FOLDER), "video.mp4")
         mock_submit.return_value = "command:123"
+        mock_get_file_md5.return_value = "md5-test"
+        mock_find_duplicate_hash.return_value = None
+        mock_find_duplicate_contents.return_value = None
 
         saved_sources = []
 
