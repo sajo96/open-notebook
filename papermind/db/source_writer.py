@@ -7,6 +7,13 @@ from open_notebook.database.repository import ensure_record_id, repo_query
 from open_notebook.domain.notebook import Asset, Source
 
 
+def _normalize_notebook_id(notebook_id: str) -> str:
+    raw = str(notebook_id or "").strip()
+    if not raw:
+        raise ValueError("notebook_id is required")
+    return raw if ":" in raw else f"notebook:{raw}"
+
+
 async def create_source_record(
     pdf_path: str,
     notebook_id: str,
@@ -19,6 +26,8 @@ async def create_source_record(
     The record is created up front so failures later in the pipeline can still be
     surfaced in UI flows that rely on `source` existence.
     """
+    normalized_notebook_id = _normalize_notebook_id(notebook_id)
+
     source = Source(
         title=title or os.path.basename(pdf_path),
         topics=[],
@@ -32,7 +41,7 @@ async def create_source_record(
     source_id = str(source.id)
 
     # Keep notebook association behavior consistent with upstream APIs.
-    await source.add_to_notebook(notebook_id)
+    await source.add_to_notebook(normalized_notebook_id)
 
     # Persist extra ingestion metadata directly on the source row.
     await repo_query(
@@ -49,7 +58,7 @@ async def create_source_record(
         {
             "source_id": source_id,
             "file_hash": file_hash,
-            "notebook_id": ensure_record_id(notebook_id),
+            "notebook_id": ensure_record_id(normalized_notebook_id),
         },
     )
 
@@ -61,34 +70,24 @@ async def update_source_status(
     source_id: str,
     status: str,
     title: Optional[str] = None,
+    full_text: Optional[str] = None,
 ) -> None:
     """Update source pipeline status and optionally set title."""
+    merge_payload = {
+        "status": status,
+    }
     if title is not None:
-        await repo_query(
-            """
-            UPDATE type::thing($source_id)
-            MERGE {
-                status: $status,
-                title: $title
-            }
-            """,
-            {
-                "source_id": source_id,
-                "status": status,
-                "title": title,
-            },
-        )
-        return
+        merge_payload["title"] = title
+    if full_text is not None:
+        merge_payload["full_text"] = full_text
 
     await repo_query(
         """
         UPDATE type::thing($source_id)
-        MERGE {
-            status: $status
-        }
+        MERGE $merge_payload
         """,
         {
             "source_id": source_id,
-            "status": status,
+            "merge_payload": merge_payload,
         },
     )

@@ -89,7 +89,47 @@ async def test_ingest_happy_path(client, tmp_path):
     assert body["tag_count"] == 2
     assert body["note_id"] == "note:1"
 
-    mock_update_status.assert_awaited_once_with("source:1", "complete", title="Test Paper")
+    mock_update_status.assert_awaited_once_with(
+        "source:1",
+        "complete",
+        title="Test Paper",
+        full_text="Abstract body",
+    )
+
+
+@pytest.mark.asyncio
+async def test_upload_endpoint_routes_to_ingest_pipeline(client, tmp_path):
+    pdf_path = tmp_path / "upload.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\nFake upload bytes")
+
+    with patch(
+        "papermind.api.ingest_routes._run_ingest_pipeline",
+        new_callable=AsyncMock,
+    ) as mock_pipeline:
+        mock_pipeline.return_value = {
+            "source_id": "source:1",
+            "paper_id": "academic_paper:1",
+            "title": "Uploaded Paper",
+            "atom_count": 1,
+            "similarity_edge_count": 0,
+            "tag_count": 0,
+            "note_id": "note:1",
+            "status": "complete",
+        }
+
+        with open(pdf_path, "rb") as f:
+            response = client.post(
+                "/api/papermind/upload",
+                data={"notebook_id": "notebook:1", "triggered_by": "upload_form"},
+                files={"file": ("upload.pdf", f, "application/pdf")},
+            )
+
+    assert response.status_code == 200
+    mock_pipeline.assert_awaited_once()
+    kwargs = mock_pipeline.await_args.kwargs
+    assert kwargs["notebook_id"] == "notebook:1"
+    assert kwargs["triggered_by"] == "upload_form"
+    assert kwargs["pdf_path"]
 
 
 @pytest.mark.asyncio

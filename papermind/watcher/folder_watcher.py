@@ -45,16 +45,20 @@ async def ingest_pdf(pdf_path: str, notebook_id: str):
         return
 
     API_BASE = os.environ.get("PAPERMIND_API_BASE", "http://localhost:5055")
+    logger.info(f"Using notebook_id: {notebook_id}")
+    logger.info(f"Calling /api/papermind/upload for {pdf_path}")
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        res = await client.post(
-            f"{API_BASE}/api/papermind/ingest",
-            json={
-                "pdf_path": str(Path(pdf_path)),
-                "notebook_id": notebook_id,
-                "triggered_by": "watcher",
-            },
-        )
+        with open(pdf_path, "rb") as f:
+            res = await client.post(
+                f"{API_BASE}/api/papermind/upload",
+                data={
+                    "notebook_id": notebook_id,
+                    "triggered_by": "watcher",
+                },
+                files={"file": (Path(pdf_path).name, f, "application/pdf")},
+            )
+        logger.info(f"Response status: {res.status_code}")
         data = res.json() if res.text else {}
 
         if data.get("status") == "duplicate":
@@ -69,6 +73,7 @@ async def ingest_pdf(pdf_path: str, notebook_id: str):
             )
             return
 
+        logger.info(f"Response body: {res.text}")
         logger.error(
             f"Ingest failed [{data.get('error_stage', 'unknown')}] "
             f"for {pdf_path}: {data.get('detail', res.text)}"

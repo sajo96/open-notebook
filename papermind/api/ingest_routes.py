@@ -1,9 +1,11 @@
 import asyncio
 import hashlib
 import os
+import tempfile
+from pathlib import Path
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from loguru import logger
 from pydantic import BaseModel
 
@@ -28,7 +30,7 @@ embedder = AtomEmbedder()
 class IngestRequest(BaseModel):
     pdf_path: str
     notebook_id: str
-    triggered_by: Literal["upload", "watcher", "manual_scan"] = "upload"
+    triggered_by: Literal["upload", "upload_form", "watcher", "manual_scan"] = "upload"
 
 
 class IngestResponse(BaseModel):
@@ -92,6 +94,22 @@ async def _parse_pdf(pdf_path: str) -> ParsedPaper:
 
 
 async def _save_academic_paper(parsed: ParsedPaper, source_id: str) -> AcademicPaper:
+    fallback_title = os.path.basename(str(source_id))
+    source_rows = _rows_from_query_result(
+        await repo_query(
+            "SELECT title FROM source WHERE id = $id LIMIT 1",
+            {"id": ensure_record_id(source_id)},
+        )
+    )
+    if source_rows:
+        source_title = str(source_rows[0].get("title") or "").strip()
+        if source_title:
+            fallback_title = source_title
+
+    parsed_title = str(parsed.title or "").strip()
+    if parsed_title.lower() in {"", "unknown title", "unknown paper"}:
+        parsed_title = fallback_title
+
     source_record_id = ensure_record_id(source_id)
     existing_result = await repo_query(
         "SELECT * FROM academic_paper WHERE source_id = $source_id LIMIT 1",
@@ -102,7 +120,7 @@ async def _save_academic_paper(parsed: ParsedPaper, source_id: str) -> AcademicP
     if existing_rows:
         paper = AcademicPaper(**existing_rows[0])
         paper.source_id = source_record_id
-        paper.title = parsed.title or os.path.basename(str(source_id))
+        paper.title = parsed_title
         paper.authors = parsed.authors
         paper.abstract = parsed.abstract
         paper.doi = parsed.doi
@@ -113,7 +131,7 @@ async def _save_academic_paper(parsed: ParsedPaper, source_id: str) -> AcademicP
     else:
         paper = AcademicPaper(
             source_id=source_record_id,
-            title=parsed.title or os.path.basename(str(source_id)),
+            title=parsed_title,
             authors=parsed.authors,
             abstract=parsed.abstract,
             doi=parsed.doi,
@@ -142,16 +160,28 @@ auto_tagger = AutoTagger()
 citation_linker = CitationLinker()
 
 
-@ingest_router.post(
-    "/ingest",
-    response_model=IngestResponse,
-    responses={422: {"model": IngestErrorResponse}, 500: {"model": IngestErrorResponse}},
-)
-async def ingest(req: IngestRequest):
+def _normalize_ingest_title(raw_title: str, pdf_path: str) -> str:
+    title = str(raw_title or "").strip()
+    if title and title.lower() not in {"unknown title", "unknown paper"}:
+        return title
+    return Path(pdf_path).stem
+
+
+async def _run_ingest_pipeline(
+    pdf_path: str,
+    notebook_id: str,
+    triggered_by: Literal["upload", "upload_form", "watcher", "manual_scan"],
+) -> IngestResponse:
+    logger.info(
+        f"Starting ingest pipeline for {pdf_path} "
+        f"(notebook_id={notebook_id}, triggered_by={triggered_by})"
+    )
+
     # 1. DEDUP
     try:
-        file_hash = _compute_file_md5(req.pdf_path)
+        file_hash = _compute_file_md5(pdf_path)
     except Exception as exc:
+        logger.exception(f"Ingest failed during dedup hash for {pdf_path}")
         raise HTTPException(
             status_code=422,
             detail=_error_detail(None, "dedup", str(exc), "dedup_error"),
@@ -164,6 +194,7 @@ async def ingest(req: IngestRequest):
         )
     )
     if existing_rows:
+        logger.info(f"Duplicate ingest skipped for {pdf_path}")
         return IngestResponse(
             source_id=str(existing_rows[0].get("id")),
             paper_id="",
@@ -178,11 +209,12 @@ async def ingest(req: IngestRequest):
     # 2. SOURCE STUB
     try:
         source_id = await create_source_record(
-            pdf_path=req.pdf_path,
-            notebook_id=req.notebook_id,
+            pdf_path=pdf_path,
+            notebook_id=notebook_id,
             file_hash=file_hash,
         )
     except Exception as exc:
+        logger.exception(f"Ingest failed creating source record for {pdf_path}")
         raise HTTPException(
             status_code=500,
             detail=_error_detail(None, "source", str(exc), "source_error"),
@@ -190,8 +222,9 @@ async def ingest(req: IngestRequest):
 
     # 3. PARSE
     try:
-        parsed = await _parse_pdf(req.pdf_path)
+        parsed = await _parse_pdf(pdf_path)
     except Exception as exc:
+        logger.exception(f"Ingest parse failed for source {source_id}")
         await update_source_status(source_id, "parse_error")
         raise HTTPException(
             status_code=422,
@@ -199,8 +232,17 @@ async def ingest(req: IngestRequest):
         )
 
     # 4. SAVE ACADEMIC PAPER
-    paper = await _save_academic_paper(parsed, source_id)
-    paper_id = str(paper.id)
+    try:
+        paper = await _save_academic_paper(parsed, source_id)
+        paper_id = str(paper.id)
+        logger.info(f"Saved academic_paper {paper_id} for source {source_id}")
+    except Exception as exc:
+        logger.exception(f"Ingest paper save failed for source {source_id}")
+        await update_source_status(source_id, "paper_error")
+        raise HTTPException(
+            status_code=500,
+            detail=_error_detail(source_id, "paper", str(exc), "paper_error"),
+        )
 
     # 5. ATOMIZE + EMBED
     try:
@@ -215,6 +257,7 @@ async def ingest(req: IngestRequest):
             await repo_update("atom", str(atom.id), {"embedding": embedding_list})
             vector_store.upsert(str(atom.id), embedding)
     except Exception as exc:
+        logger.exception(f"Ingest embed failed for source {source_id}")
         await update_source_status(source_id, "embed_error")
         raise HTTPException(
             status_code=500,
@@ -222,12 +265,23 @@ async def ingest(req: IngestRequest):
         )
 
     # 6. SIMILARITY EDGES
-    edge_count = await build_similarity_edges(paper_id)
+    try:
+        edge_count = await build_similarity_edges(paper_id)
+        logger.info(f"Built {edge_count} similarity edges for paper {paper_id}")
+    except Exception as exc:
+        logger.exception(f"Ingest similarity edge build failed for source {source_id}")
+        await update_source_status(source_id, "graph_error")
+        raise HTTPException(
+            status_code=500,
+            detail=_error_detail(source_id, "graph", str(exc), "graph_error"),
+        )
 
     # 7. NOTE GENERATION
     try:
         note = await note_generator.generate_note(paper)
+        logger.info(f"Generated note {note.note_id} for paper {paper_id}")
     except Exception as exc:
+        logger.exception(f"Ingest note generation failed for source {source_id}")
         await update_source_status(source_id, "note_error")
         raise HTTPException(
             status_code=500,
@@ -238,6 +292,7 @@ async def ingest(req: IngestRequest):
     try:
         tags = await auto_tagger.tag_paper(paper_id, parsed, note.concepts)
     except Exception as exc:
+        logger.exception(f"Ingest auto-tag failed for source {source_id}")
         await update_source_status(source_id, "tag_error")
         raise HTTPException(
             status_code=500,
@@ -251,14 +306,74 @@ async def ingest(req: IngestRequest):
         logger.warning(f"Citation linking failed for {paper_id}: {exc}")
 
     # 10. FINALIZE
-    await update_source_status(source_id, "complete", title=parsed.title)
+    final_title = _normalize_ingest_title(parsed.title, pdf_path)
+    await update_source_status(
+        source_id,
+        "complete",
+        title=final_title,
+        full_text=parsed.raw_text,
+    )
     return IngestResponse(
         source_id=source_id,
         paper_id=paper_id,
-        title=parsed.title,
+        title=final_title,
         atom_count=len(atom_ids),
         similarity_edge_count=edge_count,
         tag_count=len(tags),
         note_id=note.note_id or "",
         status="complete",
     )
+
+
+@ingest_router.post(
+    "/ingest",
+    response_model=IngestResponse,
+    responses={422: {"model": IngestErrorResponse}, 500: {"model": IngestErrorResponse}},
+)
+async def ingest(req: IngestRequest):
+    return await _run_ingest_pipeline(
+        pdf_path=req.pdf_path,
+        notebook_id=req.notebook_id,
+        triggered_by=req.triggered_by,
+    )
+
+
+@ingest_router.post(
+    "/upload",
+    response_model=IngestResponse,
+    responses={422: {"model": IngestErrorResponse}, 500: {"model": IngestErrorResponse}},
+)
+async def upload_and_ingest(
+    file: UploadFile = File(...),
+    notebook_id: str = Form(...),
+    triggered_by: Literal["upload", "upload_form", "watcher", "manual_scan"] = Form("upload"),
+):
+    if not file.filename:
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(None, "source", "Uploaded file is missing filename", "source_error"),
+        )
+
+    suffix = Path(file.filename).suffix or ".pdf"
+    temp_file_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_file_path = temp_file.name
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                temp_file.write(chunk)
+
+        return await _run_ingest_pipeline(
+            pdf_path=temp_file_path,
+            notebook_id=notebook_id,
+            triggered_by=triggered_by,
+        )
+    finally:
+        await file.close()
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except OSError as exc:
+                logger.warning(f"Failed to cleanup temp upload file {temp_file_path}: {exc}")
