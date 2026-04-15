@@ -1,12 +1,14 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel
 from urllib.parse import unquote
 from loguru import logger
+import itertools
 import re
 
 from open_notebook.database.repository import repo_query, ensure_record_id
+from papermind.utils import _rows_from_query_result, safe_error_detail
 
 router = APIRouter(prefix="/papermind", tags=["papermind-graph"])
 
@@ -33,31 +35,12 @@ class GraphMeta(BaseModel):
     concept_options: List[str] = []
     edge_count: int
     generated_at: datetime
+    warnings: List[str] = []
 
 class GraphResponse(BaseModel):
     nodes: List[GraphNode]
     edges: List[GraphEdge]
     meta: GraphMeta
-
-
-def _rows_from_query_result(query_result: Any) -> List[Dict[str, Any]]:
-    if not query_result:
-        return []
-
-    # Pattern A: [{"status": "OK", "result": [...]}]
-    first = query_result[0]
-    if isinstance(first, dict) and isinstance(first.get("result"), list):
-        return first["result"]
-
-    # Pattern B: [[...rows...]]
-    if isinstance(first, list):
-        return first
-
-    # Pattern C: [...rows...]
-    if isinstance(query_result, list) and all(isinstance(x, dict) for x in query_result):
-        return query_result
-
-    return []
 
 
 def _record_id_str(value: Any) -> Optional[str]:
@@ -299,11 +282,14 @@ async def get_notebook_graph(
         
         # Build query conditionals for academic papers
         conditions = ["source_id IN (SELECT VALUE in FROM reference WHERE out = $notebook_id)"]
+        params: Dict[str, Any] = {"notebook_id": nb_record_id}
         if year_from is not None:
-            conditions.append(f"year >= {year_from}")
+            conditions.append("year >= $year_from")
+            params["year_from"] = year_from
         if year_to is not None:
-            conditions.append(f"year <= {year_to}")
-            
+            conditions.append("year <= $year_to")
+            params["year_to"] = year_to
+
         where_clause = " AND ".join(conditions)
         
         query = f"""
@@ -316,7 +302,7 @@ async def get_notebook_graph(
         WHERE {where_clause}
         """
 
-        papers_result = await repo_query(query, {"notebook_id": nb_record_id})
+        papers_result = await repo_query(query, params)
         papers = _rows_from_query_result(papers_result)
 
         # Find plain sources (in case they weren't parsed into academic_paper)
@@ -446,47 +432,55 @@ async def get_notebook_graph(
                     edges.append(GraphEdge(source=paper_id, target=c_id, type="tagged_with", weight=1.0))
 
         # Add semantic paper-to-paper edges based on shared concept tags.
+        warnings: List[str] = []
+        MAX_PAPERS_FOR_CONCEPT_SIMILARITY = 500
+        MAX_PLAIN_SOURCE_PAIRING = 50
         paper_ids_for_concepts = sorted(paper_concepts_map.keys())
-        for i, p1 in enumerate(paper_ids_for_concepts):
-            c1 = paper_concepts_map.get(p1, set())
-            if not c1:
-                continue
-            for j in range(i + 1, len(paper_ids_for_concepts)):
-                p2 = paper_ids_for_concepts[j]
-                c2 = paper_concepts_map.get(p2, set())
-                if not c2:
+        if len(paper_ids_for_concepts) > MAX_PAPERS_FOR_CONCEPT_SIMILARITY:
+            msg = f"Concept similarity edges skipped: too many papers ({len(paper_ids_for_concepts)})"
+            warnings.append(msg)
+            logger.warning(msg)
+        else:
+            for i, p1 in enumerate(paper_ids_for_concepts):
+                c1 = paper_concepts_map.get(p1, set())
+                if not c1:
                     continue
-
-                overlap = sorted(c1 & c2)
-                if not overlap:
-                    continue
-                if len(overlap) < min_shared_concepts:
-                    continue
-
-                if concept_filter:
-                    concept_target = _canonical_concept_id(concept_filter)
-                    if concept_target and concept_target not in overlap:
+                for j in range(i + 1, len(paper_ids_for_concepts)):
+                    p2 = paper_ids_for_concepts[j]
+                    c2 = paper_concepts_map.get(p2, set())
+                    if not c2:
                         continue
 
-                overlap_labels = [
-                    _concept_label_from_id(cid)
-                    for cid in overlap[:3]
-                ]
-                label = ", ".join(overlap_labels)
-                if len(overlap) > 3:
-                    label += f" +{len(overlap) - 3}"
+                    overlap = sorted(c1 & c2)
+                    if not overlap:
+                        continue
+                    if len(overlap) < min_shared_concepts:
+                        continue
 
-                # Shared concepts are semantic signal; keep the edge visible and weighted by overlap size.
-                weight = min(1.0, 0.35 + 0.15 * len(overlap))
-                edges.append(
-                    GraphEdge(
-                        source=p1,
-                        target=p2,
-                        type="concept_similarity",
-                        weight=weight,
-                        label=label,
+                    if concept_filter:
+                        concept_target = _canonical_concept_id(concept_filter)
+                        if concept_target and concept_target not in overlap:
+                            continue
+
+                    overlap_labels = [
+                        _concept_label_from_id(cid)
+                        for cid in overlap[:3]
+                    ]
+                    label = ", ".join(overlap_labels)
+                    if len(overlap) > 3:
+                        label += f" +{len(overlap) - 3}"
+
+                    # Shared concepts are semantic signal; keep the edge visible and weighted by overlap size.
+                    weight = min(1.0, 0.35 + 0.15 * len(overlap))
+                    edges.append(
+                        GraphEdge(
+                            source=p1,
+                            target=p2,
+                            type="concept_similarity",
+                            weight=weight,
+                            label=label,
+                        )
                     )
-                )
 
         # Citation edges are added in a dedicated pass to avoid loop-variable leakage.
         for source_paper, cited_ids in paper_citations_map.items():
@@ -599,8 +593,11 @@ async def get_notebook_graph(
             sid = _record_id_str(s.get("id"))
             if sid and sid not in parsed_source_ids:
                 plain_source_ids.append(sid)
-        import itertools
-        if len(plain_source_ids) > 1:
+        if len(plain_source_ids) > MAX_PLAIN_SOURCE_PAIRING:
+            msg = f"Plain source pairing skipped: {len(plain_source_ids)} sources exceeds limit of {MAX_PLAIN_SOURCE_PAIRING}"
+            warnings.append(msg)
+            logger.warning(msg)
+        elif len(plain_source_ids) > 1:
             for s1, s2 in itertools.combinations(plain_source_ids, 2):
                 # Create a baseline conceptual edge so standalone documents cluster together slightly
                 edges.append(GraphEdge(
@@ -618,9 +615,11 @@ async def get_notebook_graph(
                 concept_count=concept_count,
                 concept_options=sorted(concept_catalog),
                 edge_count=len(edges),
-                generated_at=datetime.utcnow()
+                generated_at=datetime.now(timezone.utc),
+                warnings=warnings,
             )
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to build graph")
+        raise HTTPException(status_code=500, detail=safe_error_detail(str(e)))

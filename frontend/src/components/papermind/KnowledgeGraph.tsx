@@ -1,25 +1,18 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import dynamic from "next/dynamic";
-import { Button } from "@/components/ui/button";
+import { useState, useMemo } from "react";
 import { Loader2 } from "lucide-react";
 import PaperPanel from "./PaperPanel";
-import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
-import { GraphNode, GraphEdge, GraphData } from "./types";
+import { GraphNode, GraphData } from "./types";
 import KnowledgeGraphSigmaCanvas from "./KnowledgeGraphSigmaCanvas";
-
-const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false }) as any;
 export default function KnowledgeGraph({ notebookId }: { notebookId: string }) {
-    const fgRef = useRef<any>(null);
     const [minSim, setMinSim] = useState<number>(0.75);
     const [minSharedConcepts, setMinSharedConcepts] = useState<number>(2);
     const [conceptFilter, setConceptFilter] = useState<string>("");
     const [showConceptNodes, setShowConceptNodes] = useState<boolean>(false);
     const [showEdgeLabels, setShowEdgeLabels] = useState<boolean>(false);
     const [edgeMode, setEdgeMode] = useState<"concept_similarity" | "cites" | "similar_to">("concept_similarity");
-    const [mapEngine, setMapEngine] = useState<"force" | "sigma">("force");
     const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
 
     const normalizedNotebookId = useMemo(() => {
@@ -75,26 +68,6 @@ export default function KnowledgeGraph({ notebookId }: { notebookId: string }) {
         return { ...data, nodes, links };
     }, [data, showConceptNodes, edgeMode]);
 
-    const handleNodeClick = useCallback(
-        (node: GraphNode) => {
-            // Aim at center and zoom in
-            const distance = 40;
-            const nodeX = node.x ?? 0;
-            const nodeY = node.y ?? 0;
-            const nodeZ = node.z ?? 0;
-            const distRatio = 1 + distance / Math.hypot(nodeX, nodeY, nodeZ);
-            fgRef.current?.centerAt(nodeX, nodeY, 1000);
-            fgRef.current?.zoom(4, 2000);
-
-            if (node.type === "paper") {
-                setSelectedNode(node);
-            } else {
-                toast.info(`Clicked ${node.type}: ${node.label}`);
-            }
-        },
-        [fgRef]
-    );
-
     return (
         <div className="relative w-full h-full flex overflow-hidden bg-zinc-50 dark:bg-[#1C1C1E]">
             {/* Settings / Controls Overlay */}
@@ -102,18 +75,6 @@ export default function KnowledgeGraph({ notebookId }: { notebookId: string }) {
                 <h3 className="font-semibold text-sm text-foreground/90 uppercase tracking-widest flex items-center gap-2">
                     Knowledge Map Controls
                 </h3>
-
-                <div className="flex flex-col gap-2">
-                    <label className="text-xs font-medium">Map Engine</label>
-                    <select
-                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        value={mapEngine}
-                        onChange={(e) => setMapEngine(e.target.value as "force" | "sigma")}
-                    >
-                        <option value="force">Force (Canvas)</option>
-                        <option value="sigma">Sigma (WebGL, Experimental)</option>
-                    </select>
-                </div>
 
                 <div className="flex flex-col gap-2">
                     <label className="text-xs font-medium">Concept Filter</label>
@@ -197,16 +158,6 @@ export default function KnowledgeGraph({ notebookId }: { notebookId: string }) {
                     <div className="flex items-center gap-2"><span className="inline-block h-[2px] w-4" style={{ backgroundColor: "rgba(186, 185, 180, 0.4)" }} />Vector similarity edge</div>
                 </div>
 
-                <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-xs w-full mt-2"
-                    onClick={() => {
-                        fgRef.current?.zoomToFit(400);
-                    }}
-                >
-                    Reset Camera
-                </Button>
             </div>
 
             {isLoading ? (
@@ -221,86 +172,7 @@ export default function KnowledgeGraph({ notebookId }: { notebookId: string }) {
                 </div>
             ) : (
                 <div className="flex-1 w-full h-full">
-                    {mapEngine === "force" ? (
-                        <ForceGraph2D
-                            ref={fgRef}
-                            graphData={renderedGraphData}
-                            nodeLabel="label"
-                            nodeRelSize={6}
-                            nodeVal={(node: any) => (node.type === "paper" ? (node.atom_count || 1) * 2 : 4)}
-                            nodeColor={(node: any) => {
-                                switch (node.type) {
-                                    case "paper":
-                                        return "#01696f";
-                                    case "concept":
-                                        return "#d19900";
-                                    case "atom":
-                                        return "#006494";
-                                    case "author":
-                                        return "#7a39bb";
-                                    default:
-                                        return "#888888";
-                                }
-                            }}
-                            linkColor={(edge: any) => {
-                                switch (edge.type) {
-                                    case "cites":
-                                        return "rgba(1, 105, 111, 0.6)";
-                                    case "similar_to":
-                                        return "rgba(186, 185, 180, 0.4)";
-                                    case "concept_similarity":
-                                        return "rgba(245, 183, 0, 0.7)";
-                                    case "tagged_with":
-                                        return "rgba(209, 153, 0, 0.5)";
-                                    default:
-                                        return "rgba(100, 100, 100, 0.4)";
-                                }
-                            }}
-                            linkWidth={(edge: any) => {
-                                if (edge.type === "similar_to") return edge.weight * 2;
-                                if (edge.type === "concept_similarity") return Math.max(1.5, edge.weight * 2.2);
-                                return 1;
-                            }}
-                            linkDirectionalParticles={(edge: any) => (edge.type === "concept_similarity" ? 1 : 0)}
-                            linkDirectionalParticleSpeed={(edge: any) => (edge.type === "concept_similarity" ? 0.004 : 0)}
-                            linkCanvasObjectMode={(edge: any) => (edge.type === "concept_similarity" && showEdgeLabels ? "after" : undefined)}
-                            linkCanvasObject={(edge: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
-                                if (!showEdgeLabels || edge.type !== "concept_similarity" || !edge.label) return;
-                                const start = edge.source;
-                                const end = edge.target;
-                                if (!start || !end || typeof start !== "object" || typeof end !== "object") return;
-                                const sx = (start as any).x ?? 0;
-                                const sy = (start as any).y ?? 0;
-                                const tx = (end as any).x ?? 0;
-                                const ty = (end as any).y ?? 0;
-                                const mx = (sx + tx) / 2;
-                                const my = (sy + ty) / 2;
-
-                                const rawLabel = String(edge.label);
-                                const label = rawLabel.length > 24 ? `${rawLabel.slice(0, 24)}...` : rawLabel;
-                                const fontSize = Math.max(6, 7 / Math.max(globalScale, 0.7));
-                                const padX = Math.max(2, 3 / Math.max(globalScale, 0.7));
-                                const boxH = fontSize + 4;
-
-                                ctx.save();
-                                ctx.font = `${fontSize}px sans-serif`;
-                                ctx.textAlign = "center";
-                                ctx.textBaseline = "middle";
-                                const w = ctx.measureText(label).width;
-                                ctx.fillStyle = "rgba(28, 28, 30, 0.7)";
-                                ctx.fillRect(mx - w / 2 - padX, my - boxH / 2, w + padX * 2, boxH);
-                                ctx.fillStyle = "rgba(245, 226, 173, 0.92)";
-                                ctx.fillText(label, mx, my);
-                                ctx.restore();
-                            }}
-                            linkDirectionalArrowLength={(edge: any) => (edge.type === "cites" ? 4 : 0)}
-                            linkDirectionalArrowRelPos={1}
-                            onNodeClick={handleNodeClick}
-                            backgroundColor="transparent"
-                        />
-                    ) : (
-                        <KnowledgeGraphSigmaCanvas graphData={renderedGraphData} onPaperClick={setSelectedNode} />
-                    )}
+                    <KnowledgeGraphSigmaCanvas graphData={renderedGraphData} onPaperClick={setSelectedNode} />
                 </div>
             )}
 
