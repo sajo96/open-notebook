@@ -124,6 +124,25 @@ export interface UpdateSourceRequest {
   content?: string
 }
 
+// Ingest Response Types (from PaperMind unified ingest endpoint)
+export interface IngestResponse {
+  source_id: string
+  paper_id: string
+  title: string
+  atom_count: number
+  similarity_edge_count: number
+  tag_count: number
+  note_id: string
+  status: 'complete' | 'duplicate'
+}
+
+export interface IngestErrorResponse {
+  source_id: string | null
+  error_stage: string
+  detail: string
+  status: string
+}
+
 export interface APIError {
   detail: string
 }

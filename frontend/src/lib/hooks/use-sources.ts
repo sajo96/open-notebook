@@ -10,7 +10,8 @@ import {
   UpdateSourceRequest,
   SourceResponse,
   SourceStatusResponse,
-  SourceListResponse
+  SourceListResponse,
+  IngestResponse,
 } from '@/lib/types/api'
 
 const NOTEBOOK_SOURCES_PAGE_SIZE = 30
@@ -91,31 +92,53 @@ export function useCreateSource() {
   const { toast } = useToast()
   const { t } = useTranslation()
 
+  // Helper function to check if result is IngestResponse
+  const isIngestResponse = (result: unknown): result is IngestResponse => {
+    return result && typeof result === 'object' && 'paper_id' in result && 'atom_count' in result
+  }
+
+  // Helper function to get notebook IDs from request
+  const getNotebookIds = (variables: CreateSourceRequest): string[] => {
+    if (variables.notebooks) {
+      return variables.notebooks
+    } else if (variables.notebook_id) {
+      return [variables.notebook_id]
+    }
+    return []
+  }
+
+  // Helper function to get error message based on error stage
+  const getErrorMessageForStage = (stage: string): string => {
+    switch (stage) {
+      case 'parse':
+        return t.sources.parseError || 'Could not read this PDF. Make sure it is not corrupted or scanned.'
+      case 'embed':
+        return t.sources.embedError || 'Indexing failed. Please try again.'
+      case 'note':
+        return t.sources.noteError || 'Note generation failed. Please try again.'
+      case 'tag':
+        return t.sources.tagError || 'Auto-tagging failed. Please try again.'
+      default:
+        return t.sources.failedToAddSource || 'Upload failed. Please try again.'
+    }
+  }
+
   return useMutation({
     mutationFn: (data: CreateSourceRequest) => sourcesApi.create(data),
-    onSuccess: (result: SourceResponse, variables) => {
+    onSuccess: (result: SourceResponse | IngestResponse, variables) => {
+      const notebookIds = getNotebookIds(variables)
+
       // Invalidate queries for all relevant notebooks with immediate refetch
-      if (variables.notebooks) {
-        variables.notebooks.forEach(notebookId => {
-          queryClient.invalidateQueries({
-            queryKey: QUERY_KEYS.sources(notebookId),
-            refetchType: 'active'
-          })
-          queryClient.invalidateQueries({
-            queryKey: QUERY_KEYS.sourcesInfinite(notebookId),
-            refetchType: 'active'
-          })
-        })
-      } else if (variables.notebook_id) {
+      notebookIds.forEach(notebookId => {
         queryClient.invalidateQueries({
-          queryKey: QUERY_KEYS.sources(variables.notebook_id),
+          queryKey: QUERY_KEYS.sources(notebookId),
           refetchType: 'active'
         })
         queryClient.invalidateQueries({
-          queryKey: QUERY_KEYS.sourcesInfinite(variables.notebook_id),
+          queryKey: QUERY_KEYS.sourcesInfinite(notebookId),
           refetchType: 'active'
         })
-      }
+      })
 
       // Invalidate general sources query too with immediate refetch
       queryClient.invalidateQueries({
@@ -123,6 +146,25 @@ export function useCreateSource() {
         refetchType: 'active'
       })
 
+      // Handle IngestResponse (from file upload)
+      if (isIngestResponse(result)) {
+        // Check for duplicate status
+        if (result.status === 'duplicate') {
+          toast({
+            title: t.sources.duplicateSource || 'Paper Already Exists',
+            description: t.sources.duplicateSourceDesc || 'This paper is already in your knowledge base.',
+            variant: 'default',
+          })
+        } else if (result.status === 'complete') {
+          toast({
+            title: t.sources.sourceQueued || 'Paper Uploaded',
+            description: t.sources.sourceQueuedDesc || `Ingesting ${result.title}...`,
+          })
+        }
+        return
+      }
+
+      // Handle SourceResponse (from link or text)
       // Show different messages based on processing mode
       if (variables.async_processing) {
         toast({
@@ -137,11 +179,23 @@ export function useCreateSource() {
       }
     },
     onError: (error: unknown) => {
-      toast({
-        title: t.common.error,
-        description: getApiErrorMessage(error, (key) => t(key), t.sources.failedToAddSource),
-        variant: 'destructive',
-      })
+      // Check if error response has error_stage (IngestErrorResponse)
+      const apiError = error as Record<string, unknown> | null
+      if (apiError && 'error_stage' in apiError && typeof apiError.error_stage === 'string') {
+        const stageName = apiError.error_stage as string
+        const errorMessage = getErrorMessageForStage(stageName)
+        toast({
+          title: t.common.error,
+          description: errorMessage,
+          variant: 'destructive',
+        })
+      } else {
+        toast({
+          title: t.common.error,
+          description: getApiErrorMessage(error, (key) => t(key), t.sources.failedToAddSource),
+          variant: 'destructive',
+        })
+      }
     },
   })
 }

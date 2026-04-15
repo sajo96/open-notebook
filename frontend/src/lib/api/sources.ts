@@ -1,13 +1,15 @@
 import type { AxiosResponse } from 'axios'
 
 import apiClient from './client'
-import { 
-  SourceListResponse, 
-  SourceDetailResponse, 
+import {
+  SourceListResponse,
+  SourceDetailResponse,
   SourceResponse,
   SourceStatusResponse,
-  CreateSourceRequest, 
-  UpdateSourceRequest 
+  CreateSourceRequest,
+  UpdateSourceRequest,
+  IngestResponse,
+  IngestErrorResponse,
 } from '@/lib/types/api'
 
 export const sourcesApi = {
@@ -28,12 +30,30 @@ export const sourcesApi = {
   },
 
   create: async (data: CreateSourceRequest & { file?: File }) => {
-    // Always use FormData to match backend expectations
+    // Check if this is a file upload with file data - use new PaperMind ingest endpoint
+    const dataWithFile = data as CreateSourceRequest & { file?: File }
+    if (data.type === 'upload' && dataWithFile.file instanceof File) {
+      const formData = new FormData()
+      formData.append('file', dataWithFile.file)
+
+      // Get the first notebook ID from the array or single notebook_id
+      const notebookId = data.notebooks?.[0] || data.notebook_id
+      if (notebookId) {
+        formData.append('notebook_id', notebookId)
+      }
+
+      formData.append('triggered_by', 'upload_form')
+
+      const response = await apiClient.post<IngestResponse>('/papermind/upload', formData)
+      return response.data
+    }
+
+    // For non-upload types (link, text), use the original endpoint
     const formData = new FormData()
-    
+
     // Add basic fields
     formData.append('type', data.type)
-    
+
     if (data.notebooks !== undefined) {
       formData.append('notebooks', JSON.stringify(data.notebooks))
     }
@@ -51,58 +71,50 @@ export const sourcesApi = {
     }
     if (data.transformations !== undefined) {
       formData.append('transformations', JSON.stringify(data.transformations))
-    }
-    
-    const dataWithFile = data as CreateSourceRequest & { file?: File }
-    if (dataWithFile.file instanceof File) {
-      formData.append('file', dataWithFile.file)
-    }
-    
-    formData.append('embed', String(data.embed ?? false))
-    formData.append('delete_source', String(data.delete_source ?? false))
-    formData.append('async_processing', String(data.async_processing ?? false))
-    
-    const response = await apiClient.post<SourceResponse>('/sources', formData)
-    return response.data
-  },
+      formData.append('delete_source', String(data.delete_source ?? false))
+      formData.append('async_processing', String(data.async_processing ?? false))
 
-  update: async (id: string, data: UpdateSourceRequest) => {
-    const response = await apiClient.put<SourceListResponse>(`/sources/${id}`, data)
-    return response.data
-  },
+      const response = await apiClient.post<SourceResponse>('/sources', formData)
+      return response.data
+    },
 
-  delete: async (id: string) => {
-    await apiClient.delete(`/sources/${id}`)
-  },
+    update: async (id: string, data: UpdateSourceRequest) => {
+      const response = await apiClient.put<SourceListResponse>(`/sources/${id}`, data)
+      return response.data
+    },
 
-  status: async (id: string) => {
-    const response = await apiClient.get<SourceStatusResponse>(`/sources/${id}/status`)
-    return response.data
-  },
-
-  upload: async (file: File, notebook_id: string) => {
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('notebook_id', notebook_id)
-    formData.append('type', 'upload')
-    formData.append('async_processing', 'true')
-    
-    const response = await apiClient.post<SourceResponse>('/sources', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
+      delete: async (id: string) => {
+        await apiClient.delete(`/sources/${id}`)
       },
-    })
-    return response.data
-  },
 
-  retry: async (id: string) => {
-    const response = await apiClient.post<SourceResponse>(`/sources/${id}/retry`)
-    return response.data
-  },
+        status: async (id: string) => {
+          const response = await apiClient.get<SourceStatusResponse>(`/sources/${id}/status`)
+          return response.data
+        },
 
-  downloadFile: async (id: string): Promise<AxiosResponse<Blob>> => {
-    return apiClient.get(`/sources/${id}/download`, {
-      responseType: 'blob',
-    })
-  },
+          upload: async (file: File, notebook_id: string) => {
+            const formData = new FormData()
+            formData.append('file', file)
+            formData.append('notebook_id', notebook_id)
+            formData.append('type', 'upload')
+            formData.append('async_processing', 'true')
+
+            const response = await apiClient.post<SourceResponse>('/sources', formData, {
+              headers: {
+                'Content-Type': 'multipart/form-data',
+              },
+            })
+            return response.data
+          },
+
+            retry: async (id: string) => {
+              const response = await apiClient.post<SourceResponse>(`/sources/${id}/retry`)
+              return response.data
+            },
+
+              downloadFile: async (id: string): Promise<AxiosResponse<Blob>> => {
+                return apiClient.get(`/sources/${id}/download`, {
+                  responseType: 'blob',
+                })
+              },
 }

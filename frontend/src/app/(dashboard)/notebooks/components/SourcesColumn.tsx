@@ -16,6 +16,7 @@ import { EmptyState } from '@/components/common/EmptyState'
 import { AddSourceDialog } from '@/components/sources/AddSourceDialog'
 import { AddExistingSourceDialog } from '@/components/sources/AddExistingSourceDialog'
 import { SourceCard } from '@/components/sources/SourceCard'
+import { WatchedFolders } from '@/components/WatchedFolders'
 import { useDeleteSource, useRetrySource, useRemoveSourceFromNotebook } from '@/lib/hooks/use-sources'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { useModalManager } from '@/lib/hooks/use-modal-manager'
@@ -93,7 +94,7 @@ export function SourcesColumn({
     container.addEventListener('scroll', handleScroll)
     return () => container.removeEventListener('scroll', handleScroll)
   }, [handleScroll])
-  
+
   const handleDeleteClick = (sourceId: string) => {
     setSourceToDelete(sourceId)
     setDeleteDialogOpen(true)
@@ -187,37 +188,50 @@ export function SourcesColumn({
               <div className="flex items-center justify-center py-8">
                 <LoadingSpinner />
               </div>
-            ) : !sources || sources.length === 0 ? (
-              <EmptyState
-                icon={FileText}
-                title={t.sources.noSourcesYet}
-                description={t.sources.createFirstSource}
-              />
             ) : (
-              <div className="space-y-3">
-                {sources.map((source) => (
-                  <SourceCard
-                    key={source.id}
-                    source={source}
-                    onClick={handleSourceClick}
-                    onDelete={handleDeleteClick}
-                    onRetry={handleRetry}
-                    onRemoveFromNotebook={handleRemoveFromNotebook}
-                    onRefresh={onRefresh}
-                    showRemoveFromNotebook={true}
-                    contextMode={contextSelections?.[source.id]}
-                    onContextModeChange={onContextModeChange
-                      ? (mode) => onContextModeChange(source.id, mode)
-                      : undefined
-                    }
+              <div className="space-y-6">
+                {/* Sources Section */}
+                {!sources || sources.length === 0 ? (
+                  <EmptyState
+                    icon={FileText}
+                    title={t.sources.noSourcesYet}
+                    description={t.sources.createFirstSource}
                   />
-                ))}
-                {/* Loading indicator for infinite scroll */}
-                {isFetchingNextPage && (
-                  <div className="flex items-center justify-center py-4">
-                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                ) : (
+                  <div className="space-y-3">
+                    {sources.map((source) => (
+                      <SourceCard
+                        key={source.id}
+                        source={source}
+                        onClick={handleSourceClick}
+                        onDelete={handleDeleteClick}
+                        onRetry={handleRetry}
+                        onRemoveFromNotebook={handleRemoveFromNotebook}
+                        onRefresh={onRefresh}
+                        showRemoveFromNotebook={true}
+                        contextMode={contextSelections?.[source.id]}
+                        onContextModeChange={onContextModeChange
+                          ? (mode) => onContextModeChange(source.id, mode)
+                          : undefined
+                        }
+                      />
+                    ))}
+                    {/* Loading indicator for infinite scroll */}
+                    {isFetchingNextPage && (
+                      <div className="flex items-center justify-center py-4">
+                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                      </div>
+                    )}
                   </div>
                 )}
+
+                {/* Divider before watched folders */}
+                {sources && sources.length > 0 && (
+                  <div className="border-t border-border" />
+                )}
+
+                {/* Watched Folders Section */}
+                <WatchedFolders notebookId={notebookId} />
               </div>
             )}
           </CardContent>
