@@ -5,13 +5,7 @@ from loguru import logger
 
 from open_notebook.database.repository import ensure_record_id, repo_query
 from open_notebook.domain.notebook import Asset, Source
-
-
-def _normalize_notebook_id(notebook_id: str) -> str:
-    raw = str(notebook_id or "").strip()
-    if not raw:
-        raise ValueError("notebook_id is required")
-    return raw if ":" in raw else f"notebook:{raw}"
+from papermind.utils import _normalize_notebook_id
 
 
 async def create_source_record(

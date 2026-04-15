@@ -8,6 +8,8 @@ import re
 from papermind.models import AcademicPaper
 from papermind.generators.academic_note_generator import AcademicNoteGenerator, GeneratedNote
 from open_notebook.database.repository import repo_query, ensure_record_id
+from loguru import logger
+from papermind.utils import _rows_from_query_result, safe_error_detail
 
 router = APIRouter(prefix="/papermind", tags=["papermind-notes"])
 note_generator = AcademicNoteGenerator()
@@ -23,19 +25,6 @@ def _json_safe(value):
     # Surreal RecordID and other custom objects should be rendered as string.
     return str(value)
 
-
-def _rows_from_query_result(query_result):
-    if not query_result:
-        return []
-
-    first = query_result[0]
-    if isinstance(first, dict) and isinstance(first.get("result"), list):
-        return first["result"]
-    if isinstance(first, list):
-        return first
-    if isinstance(query_result, list):
-        return query_result
-    return []
 
 
 def _extract_ai_note_from_rows(rows):
@@ -295,9 +284,12 @@ async def generate_note(request: GenerateNoteRequest) -> dict:
         paper = await AcademicPaper.get(request.paper_id)
         if not paper:
             raise HTTPException(status_code=404, detail="Paper not found")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
+        logger.exception("Failed to fetch paper")
+        raise HTTPException(status_code=500, detail=safe_error_detail(str(e)))
+
     # 2. Check regeneration condition if a note already exists
     if not request.regenerate:
         try:
@@ -313,8 +305,8 @@ async def generate_note(request: GenerateNoteRequest) -> dict:
                     "status": "existing",
                     "note": _parse_ai_note_content(existing_note),
                 }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to check for existing note, proceeding to generate: {e}")
 
     # 3. Generate note
     try:
@@ -335,7 +327,8 @@ async def generate_note(request: GenerateNoteRequest) -> dict:
             "note": _json_safe(out_note)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+        logger.exception("Failed to generate note")
+        raise HTTPException(status_code=500, detail=safe_error_detail(f"Generation failed: {str(e)}"))
 
 @router.get("/note/{paper_id}")
 async def get_note_for_paper(paper_id: str):
@@ -394,4 +387,5 @@ async def get_note_for_paper(paper_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to get note for paper")
+        raise HTTPException(status_code=500, detail=safe_error_detail(str(e)))

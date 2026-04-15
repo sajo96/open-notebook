@@ -20,9 +20,11 @@ from papermind.graph.graph_builder import build_similarity_edges
 from papermind.models import AcademicPaper, Atom
 from papermind.parsers.academic_pdf_parser import AcademicPDFParser, ParsedPaper
 from papermind.tagging.auto_tagger import AutoTagger
+from papermind.utils import _rows_from_query_result, validate_pdf_path
 
 
 ingest_router = APIRouter(prefix="/papermind", tags=["papermind-ingest"])
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
 note_generator = AcademicNoteGenerator()
 embedder = AtomEmbedder()
 
@@ -65,22 +67,8 @@ def _error_detail(
     ).model_dump()
 
 
-def _rows_from_query_result(query_result: Any) -> list[dict[str, Any]]:
-    if not query_result:
-        return []
-
-    first = query_result[0]
-    if isinstance(first, dict) and isinstance(first.get("result"), list):
-        return first["result"]
-    if isinstance(first, list):
-        return first
-    if isinstance(query_result, list) and all(isinstance(x, dict) for x in query_result):
-        return query_result
-    return []
-
-
-def _compute_file_md5(path: str) -> str:
-    digest = hashlib.md5()
+def _compute_file_hash(path: str) -> str:
+    digest = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             digest.update(chunk)
@@ -89,7 +77,7 @@ def _compute_file_md5(path: str) -> str:
 
 async def _parse_pdf(pdf_path: str) -> ParsedPaper:
     parser = AcademicPDFParser(file_path=pdf_path)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, parser.parse)
 
 
@@ -179,7 +167,7 @@ async def _run_ingest_pipeline(
 
     # 1. DEDUP
     try:
-        file_hash = _compute_file_md5(pdf_path)
+        file_hash = _compute_file_hash(pdf_path)
     except Exception as exc:
         logger.exception(f"Ingest failed during dedup hash for {pdf_path}")
         raise HTTPException(
@@ -331,8 +319,15 @@ async def _run_ingest_pipeline(
     responses={422: {"model": IngestErrorResponse}, 500: {"model": IngestErrorResponse}},
 )
 async def ingest(req: IngestRequest):
+    try:
+        validated_path = validate_pdf_path(req.pdf_path)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(None, "source", str(e), "validation_error"),
+        )
     return await _run_ingest_pipeline(
-        pdf_path=req.pdf_path,
+        pdf_path=validated_path,
         notebook_id=req.notebook_id,
         triggered_by=req.triggered_by,
     )
@@ -354,15 +349,39 @@ async def upload_and_ingest(
             detail=_error_detail(None, "source", "Uploaded file is missing filename", "source_error"),
         )
 
-    suffix = Path(file.filename).suffix or ".pdf"
+    suffix = Path(file.filename).suffix.lower()
+    if suffix != ".pdf":
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(None, "source", "Only PDF files are accepted", "validation_error"),
+        )
+
     temp_file_path = ""
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
             temp_file_path = temp_file.name
+            total_bytes = 0
+            first_chunk = True
             while True:
                 chunk = await file.read(1024 * 1024)
                 if not chunk:
                     break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_UPLOAD_SIZE:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=_error_detail(
+                            None, "source",
+                            f"File exceeds maximum size of {MAX_UPLOAD_SIZE // (1024 * 1024)}MB",
+                            "validation_error",
+                        ),
+                    )
+                if first_chunk and not chunk[:5].startswith(b"%PDF-"):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=_error_detail(None, "source", "File is not a valid PDF", "validation_error"),
+                    )
+                first_chunk = False
                 temp_file.write(chunk)
 
         return await _run_ingest_pipeline(

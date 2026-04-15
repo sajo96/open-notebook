@@ -10,7 +10,8 @@ from papermind.atoms.chunker import chunk_paper_into_atoms
 from papermind.services.embedder_service import EmbedderService
 from papermind.parsers.academic_pdf_parser import AcademicPDFParser
 from open_notebook.domain.notebook import Source
-from open_notebook.database.repository import ensure_record_id
+from open_notebook.database.repository import ensure_record_id, repo_query
+from papermind.utils import safe_error_detail, _rows_from_query_result
 
 router = APIRouter(prefix="/papermind", tags=["papermind-atoms"])
 
@@ -45,7 +46,7 @@ async def create_atoms(req: AtomizeRequest):
                 file_path = source.asset.file_path if source and source.asset else None
                 if file_path and Path(file_path).exists():
                     parser = AcademicPDFParser(file_path=file_path)
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     chunk_input = await loop.run_in_executor(None, parser.parse)
             except Exception as e:
                 logger.warning(f"Fallback parse for atomization failed for {paper.id}: {e}")
@@ -68,21 +69,27 @@ async def create_atoms(req: AtomizeRequest):
         )
     except Exception as e:
         logger.exception("Failed to atomize paper")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_detail(str(e)))
 
 @router.get("/atoms/{paper_id}", response_model=List[AtomResponse])
 async def get_atoms(paper_id: str):
     try:
+        atoms_result = await repo_query(
+            "SELECT id, section_label, content FROM atom WHERE paper_id = $paper_id",
+            {"paper_id": ensure_record_id(paper_id)},
+        )
+        atom_rows = _rows_from_query_result(atoms_result)
+
         results = []
-        atoms = await Atom.get_all()
-        paper_atoms = [a for a in atoms if str(a.paper_id) == paper_id]
-        
-        for a in paper_atoms:
+        for row in atom_rows:
+            if not isinstance(row, dict):
+                continue
             results.append(AtomResponse(
-                id=a.id,
-                section_label=a.section_label,
-                content=a.content
+                id=str(row.get("id", "")),
+                section_label=str(row.get("section_label", "")),
+                content=str(row.get("content", "")),
             ))
         return results
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to get atoms")
+        raise HTTPException(status_code=500, detail=safe_error_detail(str(e)))

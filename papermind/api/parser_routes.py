@@ -1,5 +1,6 @@
 import os
 import re
+import httpx
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from loguru import logger
@@ -10,6 +11,7 @@ from papermind.models import AcademicPaper
 from papermind.parsers.academic_pdf_parser import AcademicPDFParser
 from open_notebook.domain.notebook import Source
 from open_notebook.database.repository import ensure_record_id, repo_query
+from papermind.utils import _rows_from_query_result, safe_error_detail
 
 router = APIRouter(prefix="/papermind/parse_academic", tags=["papermind-parser"])
 
@@ -69,18 +71,6 @@ def _extract_pdf_text_fallback(file_path: str) -> str:
         return ""
 
 
-def _rows_from_query_result(query_result: Any) -> list[dict[str, Any]]:
-    if not query_result:
-        return []
-    first = query_result[0]
-    if isinstance(first, dict) and isinstance(first.get("result"), list):
-        return first["result"]
-    if isinstance(first, list):
-        return first
-    if isinstance(query_result, list) and all(isinstance(x, dict) for x in query_result):
-        return query_result
-    return []
-
 @router.post("", response_model=ParseResponse)
 async def parse_academic_paper(req: ParseRequest, background_tasks: BackgroundTasks):
     try:
@@ -97,7 +87,7 @@ async def parse_academic_paper(req: ParseRequest, background_tasks: BackgroundTa
         parser = AcademicPDFParser(file_path=file_path)
         # Parse synchronously right now
         import asyncio
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         parsed_paper = await loop.run_in_executor(None, parser.parse)
         normalized_sections = _normalize_sections(parsed_paper.sections)
         if not normalized_sections and parsed_paper.raw_text:
@@ -171,4 +161,4 @@ async def parse_academic_paper(req: ParseRequest, background_tasks: BackgroundTa
         raise
     except Exception as e:
         logger.exception("Failed to parse academic pdf")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_detail(str(e)))

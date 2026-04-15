@@ -54,7 +54,7 @@ class ChunkerService:
                     
                     # Parse synchronously in executor to avoid blocking
                     parser = AcademicPDFParser(file_path=file_path)
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     chunk_input = await loop.run_in_executor(None, parser.parse)
                     logger.debug(f"Re-parsed source file for {paper_id}")
                     

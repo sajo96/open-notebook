@@ -1,7 +1,8 @@
 from loguru import logger
 from papermind.db.vector_store import vector_store
 from papermind.models import Atom
-from open_notebook.database.repository import repo_query
+from open_notebook.database.repository import repo_query, ensure_record_id
+from papermind.utils import _rows_from_query_result
 
 async def build_similarity_edges(paper_id: str, threshold: float = 0.75):
     """
@@ -12,9 +13,12 @@ async def build_similarity_edges(paper_id: str, threshold: float = 0.75):
     """
     edge_count = 0
     try:
-        atoms = await Atom.get_all()
-        # Filter for our paper manually for now if surreal query isn't directly matching object
-        paper_atoms = [a for a in atoms if str(a.paper_id) == str(paper_id)]
+        atoms_result = await repo_query(
+            "SELECT * FROM atom WHERE paper_id = $paper_id",
+            {"paper_id": ensure_record_id(paper_id)},
+        )
+        atom_rows = _rows_from_query_result(atoms_result)
+        paper_atoms = [Atom(**row) for row in atom_rows if isinstance(row, dict)]
         
         for atom in paper_atoms:
             if not atom.embedding:
@@ -45,8 +49,14 @@ async def build_similarity_edges(paper_id: str, threshold: float = 0.75):
                     
                 # RELATE undirected essentially means relate both ways
                 logger.info(f"Creating edge {atom.id} -> {target_id} score {score}")
-                await repo_query(f"RELATE {atom.id} -> similar_to -> {target_id} SET similarity_score = {score};")
-                await repo_query(f"RELATE {target_id} -> similar_to -> {atom.id} SET similarity_score = {score};")
+                await repo_query(
+                    "RELATE $atom_id -> similar_to -> $target_id SET similarity_score = $score;",
+                    {"atom_id": atom.id, "target_id": target_id, "score": score},
+                )
+                await repo_query(
+                    "RELATE $target_id -> similar_to -> $atom_id SET similarity_score = $score;",
+                    {"target_id": target_id, "atom_id": atom.id, "score": score},
+                )
                 edge_count += 2
     except Exception as e:
         logger.error(f"Failed to build similarity edges for {paper_id}: {e}")

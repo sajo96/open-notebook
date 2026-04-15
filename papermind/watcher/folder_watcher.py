@@ -8,13 +8,7 @@ from watchdog.events import FileCreatedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from papermind.models import WatchedFolder
-
-
-def _normalize_notebook_id(notebook_id: str) -> str:
-    raw = str(notebook_id or "").strip()
-    if not raw:
-        raise ValueError("notebook_id is required")
-    return raw if ":" in raw else f"notebook:{raw}"
+from papermind.utils import _normalize_notebook_id, validate_directory_path
 
 
 async def check_file_stability(file_path: str, wait_time: int = 2) -> bool:
@@ -126,7 +120,7 @@ class FolderWatcher:
             logger.info("FolderWatcher disabled via PAPERMIND_WATCH_ENABLED")
             return
 
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         
         # In a real SurrealDB flow we could read the WatchedFolder table on boot
         try:
@@ -171,7 +165,14 @@ class FolderWatcher:
         if not p.exists():
             logger.warning(f"Watched path {normalized_path} does not exist, creating it.")
             p.mkdir(parents=True, exist_ok=True)
-            
+
+        # Validate the resolved path is a real directory (after potential mkdir)
+        try:
+            validate_directory_path(normalized_path)
+        except ValueError as e:
+            logger.error(f"Invalid watch path {normalized_path}: {e}")
+            return
+
         observer = Observer()
         handler = PDFHandler(normalized_notebook_id, self._loop)
         observer.schedule(handler, normalized_path, recursive=recursive)

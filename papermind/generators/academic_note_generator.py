@@ -2,6 +2,7 @@ import yaml
 import json
 import re
 from pathlib import Path
+from loguru import logger
 from dataclasses import dataclass
 from typing import List, Optional, Any, Dict
 from langchain_core.prompts import ChatPromptTemplate
@@ -10,6 +11,7 @@ from open_notebook.ai.provision import provision_langchain_model
 from open_notebook.database.repository import repo_query, ensure_record_id
 from open_notebook.domain.notebook import Note
 from papermind.models import AcademicPaper, Concept
+from papermind.utils import _rows_from_query_result
 
 @dataclass
 class GeneratedNote:
@@ -40,23 +42,6 @@ class AcademicNoteGenerator:
     @staticmethod
     def _normalize_key(value: str) -> str:
         return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
-
-    @staticmethod
-    def _rows_from_query_result(query_result: Any) -> List[Any]:
-        if not query_result:
-            return []
-
-        first = query_result[0]
-        if isinstance(first, dict) and isinstance(first.get("result"), list):
-            return first["result"]
-        if isinstance(first, list):
-            return first
-        if isinstance(query_result, list):
-            # Support scalar rows from "SELECT VALUE ..." queries.
-            return query_result
-        if isinstance(query_result, list) and all(isinstance(x, dict) for x in query_result):
-            return query_result
-        return []
 
     @staticmethod
     def _canonical_concept_id(value: str) -> Optional[str]:
@@ -134,7 +119,12 @@ class AcademicNoteGenerator:
                 "SELECT VALUE out FROM reference WHERE in = $source_id LIMIT 1",
                 {"source_id": ensure_record_id(source_id)},
             )
-            relation_rows = self._rows_from_query_result(relation_rows_raw)
+            # SELECT VALUE returns a flat list of scalars, not dicts
+            if relation_rows_raw and isinstance(relation_rows_raw[0], str):
+                candidate = relation_rows_raw[0]
+                if candidate:
+                    return str(candidate)
+            relation_rows = _rows_from_query_result(relation_rows_raw)
             if relation_rows:
                 candidate = relation_rows[0]
                 if candidate:
@@ -144,7 +134,7 @@ class AcademicNoteGenerator:
                 "SELECT notebook_id FROM source WHERE id = $source_id LIMIT 1",
                 {"source_id": ensure_record_id(source_id)},
             )
-            source_rows = self._rows_from_query_result(source_rows_raw)
+            source_rows = _rows_from_query_result(source_rows_raw)
             if source_rows and isinstance(source_rows[0], dict):
                 candidate = source_rows[0].get("notebook_id")
                 if candidate:
@@ -384,19 +374,23 @@ class AcademicNoteGenerator:
                 return self._fallback_output(section_name, "", paper.title or "")
 
         # Provision LLM using open notebook's native mechanism
-        llm = await provision_langchain_model(
-            target_content, 
-            model_id=None, 
-            default_type="chat", 
-            temperature=0.1
-        )
+        try:
+            llm = await provision_langchain_model(
+                target_content,
+                model_id=None,
+                default_type="chat",
+                temperature=0.1,
+            )
+        except Exception as e:
+            logger.error(f"Failed to provision LLM model for section {section_name}: {e}")
+            return self._fallback_output(section_name, target_content, paper.title or "")
 
         chain = prompt_template | llm | JsonOutputParser()
         try:
             result = await chain.ainvoke(variables)
             return result
         except Exception as e:
-            print(f"Failed to generate section {section_name}: {str(e)}")
+            logger.warning(f"Failed to generate section {section_name} via chain: {e}")
             # Retry once without strict JSON parsing and recover best-effort output.
             try:
                 messages = prompt_template.format_messages(**variables)
@@ -418,8 +412,8 @@ class AcademicNoteGenerator:
                         return bullet_lines[:10]
                 elif raw_text:
                     return raw_text
-            except Exception:
-                pass
+            except Exception as retry_err:
+                logger.warning(f"Retry also failed for section {section_name}: {retry_err}")
 
             return self._fallback_output(section_name, target_content, paper.title or "")
 
@@ -429,7 +423,7 @@ class AcademicNoteGenerator:
             if not source_id:
                 return ""
             rows_raw = await repo_query("SELECT full_text FROM $id", {"id": ensure_record_id(str(source_id))})
-            rows = self._rows_from_query_result(rows_raw)
+            rows = _rows_from_query_result(rows_raw)
             if rows and isinstance(rows[0], dict):
                 return str(rows[0].get("full_text") or "").strip()
             return ""
@@ -567,7 +561,7 @@ class AcademicNoteGenerator:
                         }
                     )
             except Exception as e:
-                print(f"Failed linking concept {concept_label}: {e}")
+                logger.warning(f"Failed linking concept {concept_label}: {e}")
 
         # Return generated note object
         generated = GeneratedNote(
