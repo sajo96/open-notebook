@@ -122,6 +122,24 @@ class AcademicNoteGenerator:
         return cleaned.strip()
 
     @staticmethod
+    def _is_reasoning_model(llm: Any) -> bool:
+        model_name = str(
+            getattr(llm, "model_name", "")
+            or getattr(llm, "model", "")
+            or ""
+        ).lower()
+        return bool(re.match(r"^(o1|o3|o4)(-|$)", model_name))
+
+    @staticmethod
+    def _json_array_guard_instruction() -> str:
+        return (
+            "Output ONLY a valid raw JSON array. "
+            "No markdown, no explanation, no preamble, no reasoning text. "
+            "Your entire response must start with [ and end with ]. "
+            "Do not write anything before or after the JSON."
+        )
+
+    @staticmethod
     def _is_placeholder_text(text: str) -> bool:
         raw = (text or "").strip().lower()
         if not raw:
@@ -243,8 +261,15 @@ class AcademicNoteGenerator:
         section_config: dict,
         supplemental_text: str,
     ) -> Any:
+        system_prompt = self.system_prompt
+        if section_name in {"key_findings", "limitations", "concepts"}:
+            system_prompt = (
+                f"{system_prompt}\n\nJSON ARRAY MODE:\n"
+                f"{self._json_array_guard_instruction()}"
+            )
+
         prompt_template = ChatPromptTemplate.from_messages([
-            ("system", self.system_prompt),
+            ("system", system_prompt),
             ("user", section_config["prompt"])
         ])
 
@@ -329,9 +354,11 @@ class AcademicNoteGenerator:
                 temperature=0.1,
             )
             logger.info(f"[LLM] Provisioned model for section '{section_name}': {type(llm).__name__}")
-            # Disable reasoning/thinking for OpenAI o1/o3 models to get clean JSON
-            if hasattr(llm, "model_kwargs"):
-                llm.model_kwargs = {**llm.model_kwargs, "reasoning_effort": "low"}
+            # Reduce extra reasoning tokens only on OpenAI reasoning models.
+            if self._is_reasoning_model(llm) and hasattr(llm, "model_kwargs"):
+                current_kwargs = dict(getattr(llm, "model_kwargs", {}) or {})
+                llm.model_kwargs = {**current_kwargs, "reasoning_effort": "low"}
+                logger.debug(f"[LLM] Applied reasoning_effort=low for section '{section_name}'")
         except Exception as e:
             logger.error(
                 f"Failed to provision LLM model for section '{section_name}'. "
@@ -348,7 +375,7 @@ class AcademicNoteGenerator:
             logger.info(f"[LLM] Section '{section_name}' generated successfully via LLM")
             return result
         except Exception as e:
-            logger.warning(f"Failed to generate section {section_name} via chain: {e}")
+            logger.debug(f"Chain parser failed for '{section_name}', using regex fallback: {e}")
             # Retry once without strict JSON parsing and recover best-effort output.
             try:
                 messages = prompt_template.format_messages(**variables)
@@ -378,8 +405,14 @@ class AcademicNoteGenerator:
                         return bullet_lines[:10]
                 elif raw_text:
                     return raw_text
+
+                logger.warning(
+                    f"Parser fallback failed for section '{section_name}'; using heuristic fallback output"
+                )
             except Exception as retry_err:
-                logger.warning(f"Retry also failed for section {section_name}: {retry_err}")
+                logger.warning(
+                    f"Parser fallback failed for section '{section_name}' during retry: {retry_err}"
+                )
 
             return self._fallback_output(section_name, target_content, paper.title or "")
 

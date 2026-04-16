@@ -9,6 +9,7 @@ system: |
   - Do NOT use markdown formatting (no **bold**, no headers, no bullet points outside JSON).
   - Do NOT write "Here is the JSON" or any conversational text.
   - Your ENTIRE response must be parseable by json.loads().
+  - If the section requests an array, your response must start with [ and end with ].
 
 sections:
   one_line_summary:
