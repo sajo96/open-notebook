@@ -145,10 +145,21 @@ export interface IngestErrorResponse {
 
 export interface PaperStatusResponse {
   paper_id: string
+  title?: string | null
   pipeline_stage?: 'ingesting' | 'parsing' | 'embedding' | 'notes' | 'graph' | 'done' | 'failed' | null
   job_status?: 'pending' | 'queued' | 'running' | 'done' | 'failed' | 'unknown' | null
   stage_updated_at?: string | null
   error_message?: string | null
+  title_source?: 'crossref' | 'metadata' | 'scholarly' | 'heuristic' | 'raw_text' | 'llm' | 'unknown' | 'manual' | null
+  title_confidence?: number | null
+}
+
+export interface UpdatePaperTitleResponse {
+  paper_id: string
+  source_id: string
+  title: string
+  title_source: 'manual'
+  title_confidence: number
 }
 
 export interface APIError {

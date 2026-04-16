@@ -119,6 +119,8 @@ async def parse_academic_paper(req: ParseRequest, background_tasks: BackgroundTa
             paper = AcademicPaper(**existing_rows[0])
             paper.source_id = source_record_id
             paper.title = parsed_paper.title
+            paper.title_source = parsed_paper.title_source
+            paper.title_confidence = parsed_paper.title_confidence
             paper.authors = parsed_paper.authors
             paper.abstract = parsed_paper.abstract
             paper.doi = parsed_paper.doi
@@ -130,6 +132,8 @@ async def parse_academic_paper(req: ParseRequest, background_tasks: BackgroundTa
             paper = AcademicPaper(
                 source_id=source_record_id,
                 title=parsed_paper.title,
+                title_source=parsed_paper.title_source,
+                title_confidence=parsed_paper.title_confidence,
                 authors=parsed_paper.authors,
                 abstract=parsed_paper.abstract,
                 doi=parsed_paper.doi,
@@ -167,11 +171,14 @@ async def parse_academic_paper(req: ParseRequest, background_tasks: BackgroundTa
 
 class PaperStatusResponse(BaseModel):
     paper_id: str
+    title: str | None = None
     pipeline_stage: str | None
     job_status: str | None
     stage_updated_at: datetime | None
     error_message: str | None
     processing_info: dict[str, Any] | None = None
+    title_source: str | None = None
+    title_confidence: float | None = None
 
 
 @router.get("/papers/{paper_id}/status", response_model=PaperStatusResponse)
@@ -182,9 +189,12 @@ async def get_paper_status(paper_id: str):
     progress = await paper.get_processing_progress()
     return PaperStatusResponse(
         paper_id=paper_id,
+        title=paper.title,
         pipeline_stage=progress["pipeline_stage"],
         job_status=progress["job_status"],
         stage_updated_at=progress["stage_updated_at"],
         error_message=progress["error_message"],
         processing_info=progress.get("processing_info"),
+        title_source=paper.title_source,
+        title_confidence=paper.title_confidence,
     )

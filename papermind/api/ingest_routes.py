@@ -57,11 +57,14 @@ class IngestErrorResponse(BaseModel):
 
 class PaperStatusResponse(BaseModel):
     paper_id: str
+    title: Optional[str] = None
     pipeline_stage: Optional[str]
     job_status: Optional[str]
     stage_updated_at: Optional[datetime]
     error_message: Optional[str]
     processing_info: Optional[dict[str, Any]] = None
+    title_source: Optional[str] = None
+    title_confidence: Optional[float] = None
 
 
 class PaperDetailResponse(BaseModel):
@@ -76,6 +79,18 @@ class PaperDetailResponse(BaseModel):
     pipeline_stage: Optional[str]
     stage_updated_at: Optional[datetime]
     error_message: Optional[str]
+
+
+class UpdatePaperTitleRequest(BaseModel):
+    title: str
+
+
+class UpdatePaperTitleResponse(BaseModel):
+    paper_id: str
+    source_id: str
+    title: str
+    title_source: str
+    title_confidence: float
 
 
 def _error_detail(
@@ -134,6 +149,8 @@ async def _save_academic_paper(parsed: ParsedPaper, source_id: str) -> AcademicP
         paper = AcademicPaper(**existing_rows[0])
         paper.source_id = source_record_id
         paper.title = parsed_title
+        paper.title_source = parsed.title_source
+        paper.title_confidence = parsed.title_confidence
         paper.authors = parsed.authors
         paper.abstract = parsed.abstract
         paper.doi = parsed.doi
@@ -145,6 +162,8 @@ async def _save_academic_paper(parsed: ParsedPaper, source_id: str) -> AcademicP
         paper = AcademicPaper(
             source_id=source_record_id,
             title=parsed_title,
+            title_source=parsed.title_source,
+            title_confidence=parsed.title_confidence,
             authors=parsed.authors,
             abstract=parsed.abstract,
             doi=parsed.doi,
@@ -174,6 +193,8 @@ async def _upsert_ingesting_stub_paper(source_id: str, pdf_path: str) -> Academi
         paper = AcademicPaper(
             source_id=source_record_id,
             title=Path(pdf_path).stem,
+            title_source="unknown",
+            title_confidence=0.0,
             authors=[],
             abstract=None,
             doi=None,
@@ -791,11 +812,14 @@ async def get_paper_status(paper_id: str):
     progress = await paper.get_processing_progress()
     return PaperStatusResponse(
         paper_id=str(paper.id),
+        title=paper.title,
         pipeline_stage=progress["pipeline_stage"],
         job_status=progress["job_status"],
         stage_updated_at=progress["stage_updated_at"],
         error_message=progress["error_message"],
         processing_info=progress.get("processing_info"),
+        title_source=paper.title_source,
+        title_confidence=paper.title_confidence,
     )
 
 
@@ -817,11 +841,45 @@ async def get_paper_status_by_source(source_id: str):
     progress = await paper.get_processing_progress()
     return PaperStatusResponse(
         paper_id=str(paper.id),
+        title=paper.title,
         pipeline_stage=progress["pipeline_stage"],
         job_status=progress["job_status"],
         stage_updated_at=progress["stage_updated_at"],
         error_message=progress["error_message"],
         processing_info=progress.get("processing_info"),
+        title_source=paper.title_source,
+        title_confidence=paper.title_confidence,
+    )
+
+
+@ingest_router.patch(
+    "/papers/{paper_id}/title",
+    response_model=UpdatePaperTitleResponse,
+    summary="Manually update paper title",
+)
+async def update_paper_title(paper_id: str, req: UpdatePaperTitleRequest):
+    paper = await _get_paper_by_id_or_404(paper_id)
+
+    normalized_title = str(req.title or "").strip()
+    if len(normalized_title) < 3:
+        raise HTTPException(status_code=422, detail="Title must be at least 3 characters")
+
+    paper.title = normalized_title
+    paper.title_source = "manual"
+    paper.title_confidence = 1.0
+    await paper.save()
+
+    try:
+        await repo_update("source", str(paper.source_id), {"title": normalized_title})
+    except Exception as exc:
+        logger.warning(f"Failed to sync source title for {paper.source_id}: {exc}")
+
+    return UpdatePaperTitleResponse(
+        paper_id=str(paper.id),
+        source_id=str(paper.source_id),
+        title=paper.title,
+        title_source="manual",
+        title_confidence=1.0,
     )
 
 

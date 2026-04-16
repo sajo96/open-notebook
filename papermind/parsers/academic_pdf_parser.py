@@ -5,7 +5,7 @@ import os
 import re
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import crossref_commons.retrieval
 import fitz  # PyMuPDF
@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 
 _SCHOLARLY_LOCK = threading.Lock()
 _DOI_TRAILING_PUNCTUATION = ".,;:)]}"
+_TITLE_BLACKLIST_PATTERNS = [
+    re.compile(r"^\d+$"),
+    re.compile(r"^(vol|volume|issue)\b"),
+    re.compile(r"^(ieee|acm|arxiv|springer)\b"),
+    re.compile(r"\.pdf$"),
+    re.compile(r"^(abstract|introduction|keywords|references?)\b"),
+]
 
 
 SECTION_PATTERN = re.compile(
@@ -31,6 +38,8 @@ SECTION_PATTERN = re.compile(
 @dataclass
 class ParsedPaper:
     title: str
+    title_source: Literal["crossref", "metadata", "scholarly", "heuristic", "raw_text", "unknown"]
+    title_confidence: float
     authors: list[str]
     abstract: str | None
     doi: str | None
@@ -179,6 +188,171 @@ def _title_from_raw_text(raw_text: str) -> str:
     return " ".join(candidate_lines[:3])[:250]
 
 
+def _is_valid_title(title: str) -> bool:
+    candidate = re.sub(r"\s+", " ", (title or "").strip())
+    if len(candidate) < 8 or len(candidate) > 260:
+        return False
+
+    lowered = candidate.lower()
+    for pattern in _TITLE_BLACKLIST_PATTERNS:
+        if pattern.match(lowered):
+            return False
+
+    if lowered.startswith(("http://", "https://", "www.")):
+        return False
+
+    if sum(ch.isdigit() for ch in candidate) > max(4, len(candidate) // 3):
+        return False
+
+    return True
+
+
+def _extract_abstract_snippet(raw_text: str) -> str:
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    abstract_started = False
+    snippet_parts: list[str] = []
+    for line in lines:
+        normalized = line.lower().strip(":")
+        if not abstract_started and normalized == "abstract":
+            abstract_started = True
+            continue
+
+        if abstract_started:
+            if SECTION_PATTERN.match(line):
+                break
+            snippet_parts.append(line)
+            if len(" ".join(snippet_parts)) >= 300:
+                break
+
+    if snippet_parts:
+        return " ".join(snippet_parts)
+
+    return " ".join(lines[:8])
+
+
+def _extract_metadata_title(doc: fitz.Document) -> str | None:
+    metadata = getattr(doc, "metadata", {})
+    if not isinstance(metadata, dict):
+        return None
+
+    candidate = str(metadata.get("title") or "").strip()
+    if candidate and not candidate.lower().endswith(".pdf") and _is_valid_title(candidate):
+        return candidate
+    return None
+
+
+def _extract_title_from_first_page(doc: fitz.Document) -> str | None:
+    if len(doc) == 0:
+        return None
+
+    try:
+        page = doc[0]
+        page_height = float(getattr(page.rect, "height", 0) or 0)
+        page_dict = page.get_text("dict")
+    except Exception:
+        return None
+
+    if not isinstance(page_dict, dict):
+        return None
+
+    line_candidates: list[tuple[float, float, float, str]] = []
+    for block in page_dict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            spans = line.get("spans", [])
+            if not spans:
+                continue
+
+            text = "".join(str(span.get("text", "")) for span in spans)
+            text = re.sub(r"\s+", " ", text).strip()
+            if len(text) < 10:
+                continue
+
+            sizes = [float(span.get("size", 0) or 0) for span in spans]
+            if not sizes:
+                continue
+
+            max_size = max(sizes)
+            bboxes = [span.get("bbox") for span in spans if isinstance(span.get("bbox"), (list, tuple)) and len(span.get("bbox")) == 4]
+            if bboxes:
+                y0 = min(float(bbox[1]) for bbox in bboxes)
+                x0 = min(float(bbox[0]) for bbox in bboxes)
+            else:
+                line_bbox = line.get("bbox") if isinstance(line.get("bbox"), (list, tuple)) and len(line.get("bbox")) == 4 else None
+                y0 = float(line_bbox[1]) if line_bbox else 0.0
+                x0 = float(line_bbox[0]) if line_bbox else 0.0
+
+            if page_height and y0 > page_height * 0.62:
+                continue
+
+            line_candidates.append((max_size, y0, x0, text))
+
+    if not line_candidates:
+        return None
+
+    line_candidates.sort(key=lambda item: item[0], reverse=True)
+    max_size = line_candidates[0][0]
+    size_cutoff = max_size * 0.85
+
+    top_lines = [item for item in line_candidates if item[0] >= size_cutoff]
+    top_lines.sort(key=lambda item: (item[1], item[2]))
+
+    seen: set[str] = set()
+    title_parts: list[str] = []
+    for _, _, _, text in top_lines:
+        normalized = text.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        title_parts.append(text)
+        if len(title_parts) >= 4:
+            break
+
+    if not title_parts:
+        return None
+
+    candidate = re.sub(r"\s+", " ", " ".join(title_parts)).strip()
+    return candidate if _is_valid_title(candidate) else None
+
+
+def _extract_title(
+    raw_text: str,
+    doi: str | None,
+    crossref_pub: dict[str, Any],
+    metadata_title: str | None,
+    first_page_title: str | None,
+) -> tuple[str, str, float]:
+    if doi and crossref_pub:
+        crossref_title = ((crossref_pub.get("title") or [None])[0] or "").strip()
+        if _is_valid_title(crossref_title):
+            return crossref_title, "crossref", 0.98
+
+    if metadata_title and _is_valid_title(metadata_title):
+        return metadata_title, "metadata", 0.75
+
+    abstract_snippet = _extract_abstract_snippet(raw_text)
+    scholarly_pub = _scholarly_lookup(abstract_snippet[:120]) if abstract_snippet else {}
+    scholarly_title = ""
+    if scholarly_pub:
+        bib = scholarly_pub.get("bib", {}) if isinstance(scholarly_pub, dict) else {}
+        scholarly_title = str(bib.get("title") or "").strip()
+    if _is_valid_title(scholarly_title):
+        return scholarly_title, "scholarly", 0.85
+
+    if first_page_title and _is_valid_title(first_page_title):
+        return first_page_title, "heuristic", 0.70
+
+    raw_fallback = _title_from_raw_text(raw_text)
+    if _is_valid_title(raw_fallback):
+        return raw_fallback, "raw_text", 0.40
+
+    return "Unknown Title", "unknown", 0.0
+
+
 def _scholarly_lookup(title: str) -> dict[str, Any]:
     if not _scholarly_enabled():
         return {}
@@ -192,13 +366,15 @@ def _scholarly_lookup(title: str) -> dict[str, Any]:
             try:
                 pub = scholarly.scholarly.search_single_pub(title, filled=True)
                 if isinstance(pub, dict) and pub:
-                    return pub
+                    return {str(key): value for key, value in pub.items()}
             except Exception:
                 pass
 
             search_query = scholarly.scholarly.search_pubs(title)
             pub = next(search_query, None)
-            return pub if isinstance(pub, dict) else {}
+            if isinstance(pub, dict):
+                return {str(key): value for key, value in pub.items()}
+            return {}
     except Exception as exc:
         logger.info(f"Scholarly lookup skipped/failed for title '{title[:80]}': {exc}")
         return {}
@@ -288,9 +464,13 @@ class AcademicPDFParser:
 
     def parse(self) -> ParsedPaper:
         raw_text = ""
+        metadata_title: str | None = None
+        first_page_title: str | None = None
 
         try:
             with fitz.open(self.file_path) as doc:
+                metadata_title = _extract_metadata_title(doc)
+                first_page_title = _extract_title_from_first_page(doc)
                 for page in doc:
                     page_text = _extract_page_text(page)
                     if len(page_text.strip()) < 200 and os.environ.get("PAPERMIND_ENABLE_OCR", "true").lower() == "true":
@@ -310,22 +490,33 @@ class AcademicPDFParser:
         authors: list[str] = []
         year: int | None = None
         abstract: str | None = None
+        crossref_pub: dict[str, Any] = {}
 
         if doi:
             try:
-                pub = crossref_commons.retrieval.get_publication_as_json(doi)
-                if pub:
-                    title = (pub.get("title") or [title])[0]
-                    authors_list = pub.get("author", [])
+                crossref_pub = crossref_commons.retrieval.get_publication_as_json(doi) or {}
+                if crossref_pub:
+                    authors_list = crossref_pub.get("author", [])
                     authors = [f"{a.get('given', '')} {a.get('family', '')}".strip() for a in authors_list if isinstance(a, dict)]
-                    published = pub.get("published-print") or pub.get("published-online")
+                    published = crossref_pub.get("published-print") or crossref_pub.get("published-online")
                     if isinstance(published, dict):
                         date_parts = published.get("date-parts", [])
                         if date_parts and date_parts[0] and len(date_parts[0]) > 0:
                             year = date_parts[0][0]
-                    abstract = pub.get("abstract", None)
+                    abstract = crossref_pub.get("abstract", None)
             except Exception as e:
                 logger.info(f"Crossref lookup failed for DOI {doi}: {e}")
+
+        title, title_source, title_confidence = _extract_title(
+            raw_text=raw_text,
+            doi=doi,
+            crossref_pub=crossref_pub,
+            metadata_title=metadata_title,
+            first_page_title=first_page_title,
+        )
+        logger.info(
+            f"Title extracted via {title_source} (confidence={title_confidence:.2f}): {title[:120]}"
+        )
 
         if title == "Unknown Title" or not authors or year is None or abstract is None:
             fallback_title = title if title != "Unknown Title" else _title_from_raw_text(raw_text)
@@ -337,12 +528,21 @@ class AcademicPDFParser:
                 year,
                 scholarly_pub,
             )
+            if title_source == "unknown" and _is_valid_title(title):
+                if scholarly_pub:
+                    title_source = "scholarly"
+                    title_confidence = 0.85
+                else:
+                    title_source = "raw_text"
+                    title_confidence = 0.40
 
         sections = self._extract_sections(raw_text)
         raw_references = _extract_references(raw_text)
 
         return ParsedPaper(
             title=title or "Unknown Title",
+            title_source=title_source,  # type: ignore[arg-type]
+            title_confidence=title_confidence,
             authors=authors,
             abstract=abstract,
             doi=doi,

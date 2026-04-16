@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import ClassVar, Dict, List, Optional, Union, Any
+from typing import ClassVar, Dict, List, Optional, Union, Any, Literal
 
 from loguru import logger
 from open_notebook.domain.base import ObjectModel
@@ -13,6 +13,10 @@ class AcademicPaper(ObjectModel):
 
     source_id: Union[str, Any]
     title: str
+    title_source: Optional[
+        Literal["crossref", "metadata", "scholarly", "heuristic", "raw_text", "llm", "unknown", "manual"]
+    ] = None
+    title_confidence: Optional[float] = None
     authors: List[str] = []
     abstract: Optional[str] = None
     doi: Optional[str] = None

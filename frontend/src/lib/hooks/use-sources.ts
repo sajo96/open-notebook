@@ -13,6 +13,7 @@ import {
   SourceListResponse,
   IngestResponse,
   PaperStatusResponse,
+  SourceDetailResponse,
 } from '@/lib/types/api'
 
 const NOTEBOOK_SOURCES_PAGE_SIZE = 30
@@ -359,6 +360,106 @@ export function usePaperStatusBySource(sourceId: string, enabled = true) {
         return false
       }
       return failureCount < 3
+    },
+  })
+}
+
+export function useUpdatePaperTitle() {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const { t } = useTranslation()
+
+  return useMutation({
+    mutationFn: ({ paperId, title }: { sourceId: string; paperId: string; title: string }) =>
+      sourcesApi.updatePaperTitle(paperId, title),
+    onMutate: async ({ sourceId, title }: { sourceId: string; paperId: string; title: string }) => {
+      const normalizedTitle = title.trim()
+      const previousSourceQueries = queryClient.getQueriesData({ queryKey: ['sources'] })
+      const previousSourceDetail = queryClient.getQueryData<SourceDetailResponse>(QUERY_KEYS.source(sourceId))
+      const paperStatusKey = ['papermind', 'papers', 'source', sourceId, 'status']
+      const previousPaperStatus = queryClient.getQueryData<PaperStatusResponse>(paperStatusKey)
+
+      for (const [queryKey, queryData] of previousSourceQueries) {
+        if (Array.isArray(queryData)) {
+          const nextData = (queryData as SourceListResponse[]).map((item) =>
+            item.id === sourceId ? { ...item, title: normalizedTitle } : item
+          )
+          queryClient.setQueryData(queryKey, nextData)
+          continue
+        }
+
+        if (queryData && typeof queryData === 'object' && 'pages' in queryData) {
+          const pagedData = queryData as {
+            pages: Array<{ sources?: SourceListResponse[] }>
+            pageParams: unknown[]
+          }
+          const nextData = {
+            ...pagedData,
+            pages: pagedData.pages.map((page) => ({
+              ...page,
+              sources: page.sources?.map((item) =>
+                item.id === sourceId ? { ...item, title: normalizedTitle } : item
+              ),
+            })),
+          }
+          queryClient.setQueryData(queryKey, nextData)
+        }
+      }
+
+      if (previousSourceDetail && previousSourceDetail.id === sourceId) {
+        queryClient.setQueryData<SourceDetailResponse>(QUERY_KEYS.source(sourceId), {
+          ...previousSourceDetail,
+          title: normalizedTitle,
+        })
+      }
+
+      queryClient.setQueryData<PaperStatusResponse>(paperStatusKey, (old) => {
+        if (!old) return old
+        return {
+          ...old,
+          title: normalizedTitle,
+          title_source: 'manual',
+          title_confidence: 1.0,
+        }
+      })
+
+      return { previousSourceQueries, previousSourceDetail, previousPaperStatus, paperStatusKey }
+    },
+    onError: (error: unknown, { sourceId }, context) => {
+      if (context?.previousSourceQueries) {
+        for (const [queryKey, queryData] of context.previousSourceQueries) {
+          queryClient.setQueryData(queryKey, queryData)
+        }
+      }
+
+      if (context?.previousSourceDetail) {
+        queryClient.setQueryData(QUERY_KEYS.source(sourceId), context.previousSourceDetail)
+      }
+
+      if (context?.previousPaperStatus) {
+        queryClient.setQueryData(context.paperStatusKey, context.previousPaperStatus)
+      }
+
+      toast({
+        title: t.common.error,
+        description: getApiErrorMessage(error, (key) => t(key), t.sources.failedToUpdateSource),
+        variant: 'destructive',
+      })
+    },
+    onSuccess: (result, { sourceId }) => {
+      const paperStatusKey = ['papermind', 'papers', 'source', sourceId, 'status']
+      queryClient.setQueryData<PaperStatusResponse>(paperStatusKey, (old) => ({
+        ...old,
+        paper_id: result.paper_id,
+        title: result.title,
+        title_source: result.title_source,
+        title_confidence: result.title_confidence,
+      }))
+    },
+    onSettled: (_result, _error, { sourceId }) => {
+      queryClient.invalidateQueries({ queryKey: ['sources'] })
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.source(sourceId) })
+      queryClient.invalidateQueries({ queryKey: ['papermind', 'papers', 'source', sourceId, 'status'] })
     },
   })
 }

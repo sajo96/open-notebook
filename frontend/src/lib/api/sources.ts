@@ -6,6 +6,7 @@ import {
   SourceDetailResponse,
   SourceResponse,
   PaperStatusResponse,
+  UpdatePaperTitleResponse,
   SourceStatusResponse,
   CreateSourceRequest,
   UpdateSourceRequest,
@@ -124,6 +125,14 @@ export const sourcesApi = {
   retryPaperPipeline: async (paperId: string) => {
     const response = await apiClient.post<{ status: string; paper_id: string }>(
       `/papermind/papers/${paperId}/retry`
+    )
+    return response.data
+  },
+
+  updatePaperTitle: async (paperId: string, title: string) => {
+    const response = await apiClient.patch<UpdatePaperTitleResponse>(
+      `/papermind/papers/${paperId}/title`,
+      { title }
     )
     return response.data
   },

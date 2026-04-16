@@ -23,14 +23,18 @@ import {
   CheckCircle,
   AlertTriangle,
   Loader2,
-  Unlink
+  Unlink,
+  Pencil,
+  Check,
+  X
 } from 'lucide-react'
-import { usePaperStatusBySource, useSourceStatus } from '@/lib/hooks/use-sources'
+import { usePaperStatusBySource, useSourceStatus, useUpdatePaperTitle } from '@/lib/hooks/use-sources'
 import { useTranslation } from '@/lib/hooks/use-translation'
 import { TranslationKeys } from '@/lib/locales'
 import { cn } from '@/lib/utils'
 import { ContextToggle } from '@/components/common/ContextToggle'
 import { ContextMode } from '@/app/(dashboard)/notebooks/[id]/page'
+import { Input } from '@/components/ui/input'
 
 interface SourceCardProps {
   source: SourceListResponse
@@ -59,6 +63,13 @@ const PIPELINE_STAGE_LABELS: Record<string, string> = {
   graph: 'Building Graph',
   done: 'Ready',
   failed: 'Failed',
+}
+
+const TITLE_SOURCE_LABELS: Record<string, string> = {
+  heuristic: 'Unverified title',
+  llm: 'Unverified title',
+  raw_text: 'Unverified title',
+  unknown: 'No title',
 }
 
 const getStatusConfig = (t: TranslationKeys) => ({
@@ -146,6 +157,8 @@ export function SourceCard({
   // Track processing state to continue polling until we detect completion
   const [wasProcessing, setWasProcessing] = useState(false)
   const [showDoneStageBadge, setShowDoneStageBadge] = useState(false)
+  const [isEditingTitle, setIsEditingTitle] = useState(false)
+  const [draftTitle, setDraftTitle] = useState('')
 
   const shouldFetchStatus = !!sourceWithStatus.command_id ||
     sourceWithStatus.status === 'new' ||
@@ -159,6 +172,7 @@ export function SourceCard({
     shouldFetchStatus
   )
   const { data: paperStatusData } = usePaperStatusBySource(source.id, !!source.id)
+  const updatePaperTitleMutation = useUpdatePaperTitle()
 
   // Determine current status
   // If source has a command_id but no status, treat as "new" (just created)
@@ -193,7 +207,8 @@ export function SourceCard({
   const sourceType = getSourceType(source)
   const SourceTypeIcon = SOURCE_TYPE_ICONS[sourceType]
 
-  const title = source.title || t.sources.untitledSource
+  const title = (paperStatusData?.title || source.title || '').trim() || t.sources.untitledSource
+  const paperId = paperStatusData?.paper_id
 
   const handleRetry = () => {
     if (onRetry) {
@@ -219,12 +234,67 @@ export function SourceCard({
     }
   }
 
+  useEffect(() => {
+    if (!isEditingTitle) {
+      setDraftTitle(title)
+    }
+  }, [isEditingTitle, title])
+
+  const handleStartTitleEdit = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation()
+    if (!paperId) {
+      return
+    }
+    setDraftTitle(title)
+    setIsEditingTitle(true)
+  }
+
+  const handleCancelTitleEdit = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation()
+    setIsEditingTitle(false)
+    setDraftTitle(title)
+  }
+
+  const saveTitle = () => {
+    if (!paperId) {
+      return
+    }
+
+    const normalizedTitle = draftTitle.trim()
+    if (!normalizedTitle || normalizedTitle === title) {
+      setIsEditingTitle(false)
+      return
+    }
+
+    updatePaperTitleMutation.mutate(
+      { sourceId: source.id, paperId, title: normalizedTitle },
+      {
+        onSuccess: () => {
+          setIsEditingTitle(false)
+        },
+      }
+    )
+  }
+
+  const handleSaveTitle = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation()
+    saveTitle()
+  }
+
   const isProcessing: boolean = currentStatus === 'new' || currentStatus === 'running' || currentStatus === 'queued' || currentStatus === 'processing'
   const isFailed: boolean = currentStatus === 'failed'
   const isCompleted: boolean = currentStatus === 'completed'
   const pipelineStage = paperStatusData?.pipeline_stage ?? undefined
   const pipelineLabel = pipelineStage ? PIPELINE_STAGE_LABELS[pipelineStage] || pipelineStage : null
   const pipelineError = paperStatusData?.error_message || null
+  const titleSource = paperStatusData?.title_source ?? undefined
+  const titleConfidence = paperStatusData?.title_confidence ?? undefined
+  const showTitleQualityBadge = !!titleSource && ['heuristic', 'llm', 'raw_text', 'unknown'].includes(titleSource)
+  const titleBadgeLabel = titleSource ? TITLE_SOURCE_LABELS[titleSource] || 'Unverified title' : 'Unverified title'
+  const titleBadgeVariant = titleSource === 'unknown' ? 'destructive' : 'secondary'
+  const titleBadgeTitle = typeof titleConfidence === 'number'
+    ? `Title source: ${titleSource}, confidence: ${(titleConfidence * 100).toFixed(0)}%`
+    : `Title source: ${titleSource}`
   const pipelineInProgress = !!pipelineStage && !['done', 'failed'].includes(pipelineStage)
   const shouldShowPipelineBadge = !!pipelineLabel && (pipelineStage !== 'done' || showDoneStageBadge)
 
@@ -251,12 +321,71 @@ export function SourceCard({
         <div className="flex items-start justify-between gap-3 mb-1">
           <div className="flex-1 min-w-0">
             <div className="flex items-start gap-2 mb-1.5">
-              <h4
-                className="min-w-0 flex-1 text-sm font-medium leading-tight line-clamp-2 break-all"
-                title={title}
-              >
-                {title}
-              </h4>
+              {isEditingTitle ? (
+                <div className="min-w-0 flex-1 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                  <Input
+                    value={draftTitle}
+                    onChange={(e) => setDraftTitle(e.target.value)}
+                    className="h-8 text-sm"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        saveTitle()
+                      }
+                      if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setIsEditingTitle(false)
+                        setDraftTitle(title)
+                      }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={handleSaveTitle}
+                    disabled={updatePaperTitleMutation.isPending}
+                    title={t.common.save}
+                  >
+                    {updatePaperTitleMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={handleCancelTitleEdit}
+                    disabled={updatePaperTitleMutation.isPending}
+                    title={t.common.cancel}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <h4
+                    className="min-w-0 flex-1 text-sm font-medium leading-tight line-clamp-2 break-all"
+                    title={title}
+                  >
+                    {title}
+                  </h4>
+                  {paperId && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={handleStartTitleEdit}
+                      title={t.common.edit}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                </>
+              )}
               {!isCompleted && (
                 <div className={cn(
                   'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium shrink-0',
@@ -294,6 +423,18 @@ export function SourceCard({
                 >
                   {pipelineInProgress && <Loader2 className="h-3 w-3 animate-spin" />}
                   Stage: {pipelineLabel}
+                </Badge>
+              </div>
+            )}
+
+            {showTitleQualityBadge && (
+              <div className="mb-2">
+                <Badge
+                  variant={titleBadgeVariant}
+                  className="text-xs"
+                  title={titleBadgeTitle}
+                >
+                  {titleSource === 'unknown' ? '? No title' : '⚠ Unverified title'}
                 </Badge>
               </div>
             )}
