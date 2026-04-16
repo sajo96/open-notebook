@@ -76,6 +76,14 @@ const getStatusConfig = (t: TranslationKeys) => ({
     label: t.sources.statusProcessing,
     description: t.sources.statusProcessingDesc
   },
+  processing: {
+    icon: Loader2,
+    color: 'text-blue-600',
+    bgColor: 'bg-blue-50',
+    borderColor: 'border-blue-200',
+    label: t.sources.statusProcessing,
+    description: t.sources.statusProcessingDesc
+  },
   completed: {
     icon: CheckCircle,
     color: 'text-green-600',
@@ -94,10 +102,10 @@ const getStatusConfig = (t: TranslationKeys) => ({
   }
 } as const)
 
-type SourceStatus = 'new' | 'queued' | 'running' | 'completed' | 'failed'
+type SourceStatus = 'new' | 'queued' | 'running' | 'processing' | 'completed' | 'failed'
 
 function isSourceStatus(status: unknown): status is SourceStatus {
-  return typeof status === 'string' && ['new', 'queued', 'running', 'completed', 'failed'].includes(status)
+  return typeof status === 'string' && ['new', 'queued', 'running', 'processing', 'completed', 'failed'].includes(status)
 }
 
 function getSourceType(source: SourceListResponse): 'link' | 'upload' | 'text' {
@@ -132,6 +140,7 @@ export function SourceCard({
     sourceWithStatus.status === 'new' ||
     sourceWithStatus.status === 'queued' ||
     sourceWithStatus.status === 'running' ||
+    sourceWithStatus.status === 'processing' ||
     wasProcessing // Keep polling if we were processing to catch the completion
 
   const { data: statusData, isLoading: statusLoading } = useSourceStatus(
@@ -152,7 +161,7 @@ export function SourceCard({
     const currentStatusFromData = statusData?.status || sourceWithStatus.status
 
     // If we're currently processing, mark that we were processing
-    if (currentStatusFromData === 'new' || currentStatusFromData === 'running' || currentStatusFromData === 'queued') {
+    if (currentStatusFromData === 'new' || currentStatusFromData === 'running' || currentStatusFromData === 'queued' || currentStatusFromData === 'processing') {
       setWasProcessing(true)
     }
 
@@ -198,7 +207,7 @@ export function SourceCard({
     }
   }
 
-  const isProcessing: boolean = currentStatus === 'new' || currentStatus === 'running' || currentStatus === 'queued'
+  const isProcessing: boolean = currentStatus === 'new' || currentStatus === 'running' || currentStatus === 'queued' || currentStatus === 'processing'
   const isFailed: boolean = currentStatus === 'failed'
   const isCompleted: boolean = currentStatus === 'completed'
 
@@ -214,11 +223,16 @@ export function SourceCard({
         {/* Header with status indicator */}
         <div className="flex items-start justify-between gap-3 mb-1">
           <div className="flex-1 min-w-0">
-            {/* Status badge - only show if not completed */}
-            {!isCompleted && (
-              <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-start gap-2 mb-1.5">
+              <h4
+                className="min-w-0 flex-1 text-sm font-medium leading-tight line-clamp-2 break-all"
+                title={title}
+              >
+                {title}
+              </h4>
+              {!isCompleted && (
                 <div className={cn(
-                  'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium',
+                  'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium shrink-0',
                   statusConfig.bgColor,
                   statusConfig.color
                 )}>
@@ -228,23 +242,13 @@ export function SourceCard({
                   )} />
                   {statusLoading && shouldFetchStatus ? t.sources.checking : statusConfig.label}
                 </div>
+              )}
+            </div>
 
-                {/* Source type indicator */}
-                <div className="flex items-center gap-1 text-gray-500">
-                  <SourceTypeIcon className="h-3 w-3" />
-                  <span className="text-xs capitalize">{t.common.source}</span>
-                </div>
-              </div>
-            )}
-
-            {/* Title */}
-            <div className={cn('mb-1.5', !isCompleted && 'mb-1')}>
-              <h4
-                className="text-sm font-medium leading-tight line-clamp-2 break-all"
-                title={title}
-              >
-                {title}
-              </h4>
+            {/* Source type indicator */}
+            <div className="flex items-center gap-1 text-gray-500 mb-1">
+              <SourceTypeIcon className="h-3 w-3" />
+              <span className="text-xs capitalize">{t.common.source}</span>
             </div>
 
             {/* Processing message for active statuses */}

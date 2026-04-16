@@ -16,6 +16,12 @@ import {
 
 const NOTEBOOK_SOURCES_PAGE_SIZE = 30
 
+const ACTIVE_SOURCE_STATUSES = new Set(['new', 'queued', 'running', 'processing'])
+
+function isActiveSourceStatus(status?: string | null, hasCommand = false): boolean {
+  return hasCommand || (typeof status === 'string' && ACTIVE_SOURCE_STATUSES.has(status))
+}
+
 export function useSources(notebookId?: string) {
   return useQuery({
     queryKey: QUERY_KEYS.sources(notebookId),
@@ -23,6 +29,11 @@ export function useSources(notebookId?: string) {
     enabled: !!notebookId,
     staleTime: 5 * 1000, // 5 seconds - more responsive for real-time source updates
     refetchOnWindowFocus: true, // Refetch when user comes back to the tab
+    refetchInterval: (query) => {
+      const sources = query.state.data as SourceListResponse[] | undefined
+      const hasActiveSource = sources?.some((source) => isActiveSourceStatus(source.status, !!source.command_id))
+      return hasActiveSource ? 2000 : false
+    },
   })
 }
 
@@ -53,6 +64,13 @@ export function useNotebookSources(notebookId: string) {
     enabled: !!notebookId,
     staleTime: 5 * 1000,
     refetchOnWindowFocus: true,
+    refetchInterval: (query) => {
+      const pages = query.state.data?.pages as Array<{ sources: SourceListResponse[] }> | undefined
+      const hasActiveSource = pages?.some((page) =>
+        page.sources.some((source) => isActiveSourceStatus(source.status, !!source.command_id))
+      )
+      return hasActiveSource ? 2000 : false
+    },
   })
 
   // Flatten all pages into a single array (memoized to prevent infinite re-renders)
@@ -294,7 +312,7 @@ export function useSourceStatus(sourceId: string, enabled = true) {
       // Auto-refresh every 2 seconds if processing
       // The query.state.data contains the SourceStatusResponse
       const data = query.state.data as SourceStatusResponse | undefined
-      if (data?.status === 'running' || data?.status === 'queued' || data?.status === 'new') {
+      if (data?.status === 'running' || data?.status === 'queued' || data?.status === 'new' || data?.status === 'processing') {
         return 2000
       }
       // No auto-refresh if completed, failed, or unknown
