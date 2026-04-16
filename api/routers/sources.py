@@ -305,7 +305,7 @@ async def get_sources(
         else:
             # Query all sources - include command field with FETCH
             query = f"""
-                SELECT id, asset, created, title, updated, topics, command,
+                SELECT id, asset, created, title, updated, topics, command, status,
                 (SELECT VALUE count() FROM source_insight WHERE source = $parent.id GROUP ALL)[0].count OR 0 AS insights_count,
                 (SELECT VALUE id FROM source_embedding WHERE source = $parent.id LIMIT 1) != [] AS embedded
                 FROM source
@@ -321,7 +321,7 @@ async def get_sources(
         for row in result:
             command = row.get("command")
             command_id = None
-            status = None
+            status = row.get("status")
             processing_info = None
 
             # Extract status from fetched command object (already resolved by FETCH)

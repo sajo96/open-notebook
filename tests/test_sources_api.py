@@ -152,5 +152,31 @@ class TestAsyncSourceAssetPersistence:
         assert source.asset is None
 
 
+@pytest.mark.asyncio
+@patch("api.routers.sources.repo_query", new_callable=AsyncMock)
+async def test_sources_list_includes_status(mock_repo_query, client):
+    mock_repo_query.return_value = [
+        {
+            "id": "source:1",
+            "asset": {"file_path": "/tmp/sample.pdf", "url": None},
+            "created": "2026-04-16T17:00:00Z",
+            "title": "Sample Paper",
+            "updated": "2026-04-16T17:05:00Z",
+            "topics": [],
+            "command": {"id": "command:1", "status": "running", "result": {}},
+            "status": "running",
+            "insights_count": 0,
+            "embedded": False,
+        }
+    ]
+
+    response = client.get("/api/sources")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["status"] == "running"
+    assert body[0]["command_id"] == "command:1"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
