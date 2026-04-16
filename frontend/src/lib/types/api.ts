@@ -136,6 +136,47 @@ export interface IngestResponse {
   status: 'complete' | 'duplicate'
 }
 
+export interface IngestAsyncResponse {
+  job_id: string
+  notebook_id: string
+  paper_name: string
+  stage: string
+  progress: number
+  status: 'queued'
+}
+
+export interface UploadProgressJobResponse {
+  id: string
+  notebook_id: string
+  paper_name: string
+  trigger: 'manual' | 'watcher'
+  stage: 'uploading' | 'parsing' | 'atomizing' | 'embedding' | 'note_generating' | 'complete' | 'error'
+  progress: number
+  source_id?: string | null
+  error_message?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface UploadProgressEvent {
+  cursor: number
+  event: 'job_created' | 'job_updated'
+  job_id: string
+  notebook_id: string
+  payload: {
+    stage?: UploadProgressJobResponse['stage']
+    progress?: number
+    source_id?: string
+    error_message?: string
+  }
+  created_at: string
+}
+
+export interface UploadProgressEventsResponse {
+  events: UploadProgressEvent[]
+  cursor: number
+}
+
 export interface IngestErrorResponse {
   source_id: string | null
   error_stage: string

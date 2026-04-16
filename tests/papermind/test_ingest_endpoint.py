@@ -50,13 +50,13 @@ async def test_ingest_happy_path(client, tmp_path):
         patch("papermind.api.ingest_routes.embedder.embed_batch", new_callable=AsyncMock) as mock_embed_batch,
         patch("papermind.api.ingest_routes.build_similarity_edges", new_callable=AsyncMock) as mock_build_edges,
         patch("papermind.api.ingest_routes.note_generator.generate_note", new_callable=AsyncMock) as mock_generate_note,
-        patch("papermind.api.ingest_routes.auto_tagger.tag_paper", new_callable=AsyncMock) as mock_tag,
+        patch("papermind.api.ingest_routes.save_concepts", new_callable=AsyncMock) as mock_tag,
         patch("papermind.api.ingest_routes.citation_linker.link_references", new_callable=AsyncMock) as mock_cite,
     ):
         mock_repo_query.return_value = []  # dedup lookup only
         mock_create_source.return_value = "source:1"
         mock_parse.return_value = _parsed_paper()
-        mock_save_paper.return_value = SimpleNamespace(id="academic_paper:1")
+        mock_save_paper.return_value = SimpleNamespace(id="academic_paper:1", authors=[])
         mock_save_atoms.return_value = ["atom:1", "atom:2"]
         mock_embed_batch.return_value = []
         mock_build_edges.return_value = 4
@@ -89,7 +89,13 @@ async def test_ingest_happy_path(client, tmp_path):
     assert body["tag_count"] == 2
     assert body["note_id"] == "note:1"
 
-    mock_update_status.assert_awaited_once_with(
+    assert mock_update_status.await_count == 2
+    mock_update_status.assert_any_await(
+        "source:1",
+        "processing",
+        full_text="Abstract body",
+    )
+    mock_update_status.assert_any_await(
         "source:1",
         "complete",
         title="Test Paper",
@@ -206,7 +212,7 @@ async def test_ingest_embed_error_sets_embed_error_status(client, tmp_path):
         mock_repo_query.return_value = []
         mock_create_source.return_value = "source:1"
         mock_parse.return_value = _parsed_paper()
-        mock_save_paper.return_value = SimpleNamespace(id="academic_paper:1")
+        mock_save_paper.return_value = SimpleNamespace(id="academic_paper:1", authors=[])
         mock_save_atoms.return_value = ["atom:1"]
         mock_embed_batch.side_effect = RuntimeError("embedder failure")
 

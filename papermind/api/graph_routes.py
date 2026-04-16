@@ -116,7 +116,13 @@ async def get_notebook_graph(
         """
         
         # Build query conditionals for academic papers
-        conditions = ["source_id IN (SELECT VALUE in FROM reference WHERE out = $notebook_id)"]
+        conditions = [
+            "source_id IN ("
+            "SELECT VALUE id FROM source "
+            "WHERE id IN (SELECT VALUE in FROM reference WHERE out = $notebook_id) "
+            "AND status = 'complete'"
+            ")"
+        ]
         params: Dict[str, Any] = {"notebook_id": nb_record_id}
         if year_from is not None:
             conditions.append("year >= $year_from")
@@ -145,6 +151,7 @@ async def get_notebook_graph(
         SELECT id, title, (SELECT count() FROM source_embedding WHERE source = $parent.id) as chunk_count
         FROM source 
         WHERE id IN (SELECT VALUE in FROM reference WHERE out = $notebook_id)
+                    AND status = 'complete'
         """
         plain_sources_result = await repo_query(sources_query, {"notebook_id": nb_record_id})
         plain_sources = _rows_from_query_result(plain_sources_result)

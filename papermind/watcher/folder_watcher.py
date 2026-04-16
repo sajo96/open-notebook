@@ -53,7 +53,7 @@ async def ingest_pdf(pdf_path: str, notebook_id: str):
     async with httpx.AsyncClient(timeout=120.0) as client:
         with open(pdf_path, "rb") as f:
             res = await client.post(
-                f"{API_BASE}/api/papermind/upload",
+                f"{API_BASE}/api/papermind/upload-async",
                 data={
                     "notebook_id": normalized_notebook_id,
                     "triggered_by": "watcher",
@@ -69,9 +69,8 @@ async def ingest_pdf(pdf_path: str, notebook_id: str):
 
         if res.status_code == 200:
             logger.info(
-                f"Ingested: {data.get('title', 'Unknown Title')} "
-                f"({data.get('atom_count', 0)} atoms, "
-                f"{data.get('similarity_edge_count', 0)} edges)"
+                f"Queued watcher ingest for {Path(pdf_path).name} "
+                f"(job_id={data.get('job_id', 'unknown')})"
             )
             return
 

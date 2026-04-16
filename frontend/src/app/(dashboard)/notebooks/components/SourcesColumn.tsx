@@ -17,12 +17,14 @@ import { AddSourceDialog } from '@/components/sources/AddSourceDialog'
 import { AddExistingSourceDialog } from '@/components/sources/AddExistingSourceDialog'
 import { SourceCard } from '@/components/sources/SourceCard'
 import { useDeleteSource, useRetrySource, useRemoveSourceFromNotebook } from '@/lib/hooks/use-sources'
+import { sourcesApi } from '@/lib/api/sources'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { useModalManager } from '@/lib/hooks/use-modal-manager'
 import { ContextMode } from '../[id]/page'
 import { CollapsibleColumn, createCollapseButton } from '@/components/notebooks/CollapsibleColumn'
 import { useNotebookColumnsStore } from '@/lib/stores/notebook-columns-store'
 import { useTranslation } from '@/lib/hooks/use-translation'
+import { STAGE_LABEL, useUploadStore } from '@/lib/stores/upload-store'
 
 interface SourcesColumnProps {
   sources?: SourceListResponse[]
@@ -59,9 +61,17 @@ export function SourcesColumn({
   const [sourceToRemove, setSourceToRemove] = useState<string | null>(null)
 
   const { openModal } = useModalManager()
+  const { jobs, addJob, updateJob, removeJob } = useUploadStore()
   const deleteSource = useDeleteSource()
   const retrySource = useRetrySource()
   const removeFromNotebook = useRemoveSourceFromNotebook()
+  const watcherCursorRef = useRef(0)
+  const completionTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+
+  const notebookJobs = useMemo(
+    () => jobs.filter((job) => job.notebookId === notebookId),
+    [jobs, notebookId]
+  )
 
   // Collapsible column state
   const { sourcesCollapsed, toggleSources } = useNotebookColumnsStore()
@@ -145,6 +155,98 @@ export function SourcesColumn({
     openModal('source', sourceId)
   }
 
+  useEffect(() => {
+    const pending = notebookJobs.filter((job) => job.stage !== 'complete' && job.stage !== 'error')
+    if (pending.length === 0) return
+
+    let active = true
+    const poll = async () => {
+      await Promise.all(
+        pending.map(async (job) => {
+          try {
+            const latest = await sourcesApi.getUploadProgress(job.id)
+            if (!active) return
+
+            const wasPending = job.stage !== 'complete' && job.stage !== 'error'
+            const nowComplete = latest.stage === 'complete'
+            updateJob(job.id, {
+              stage: latest.stage,
+              progress: latest.progress,
+              sourceId: latest.source_id ?? null,
+              errorMessage: latest.error_message ?? undefined,
+            })
+
+            if (wasPending && nowComplete) {
+              onRefresh?.()
+              if (!completionTimeoutsRef.current.has(job.id)) {
+                const timeoutId = setTimeout(() => {
+                  removeJob(job.id)
+                  completionTimeoutsRef.current.delete(job.id)
+                }, 5000)
+                completionTimeoutsRef.current.set(job.id, timeoutId)
+              }
+            }
+          } catch {
+            // Ignore transient progress polling errors.
+          }
+        })
+      )
+    }
+
+    poll()
+    const intervalId = setInterval(poll, 2000)
+    return () => {
+      active = false
+      clearInterval(intervalId)
+    }
+  }, [notebookJobs, onRefresh, removeJob, updateJob])
+
+  useEffect(() => {
+    let active = true
+    watcherCursorRef.current = 0
+    const completionTimeouts = completionTimeoutsRef.current
+    const pollEvents = async () => {
+      try {
+        const result = await sourcesApi.listUploadEvents(notebookId, watcherCursorRef.current)
+        if (!active) return
+
+        watcherCursorRef.current = result.cursor
+        await Promise.all(
+          result.events.map(async (event) => {
+            try {
+              const latest = await sourcesApi.getUploadProgress(event.job_id)
+              if (!active) return
+
+              addJob({
+                id: latest.id,
+                paperName: latest.paper_name,
+                notebookId: latest.notebook_id,
+                sourceId: latest.source_id ?? null,
+                trigger: latest.trigger,
+                stage: latest.stage,
+                progress: latest.progress,
+                errorMessage: latest.error_message ?? undefined,
+              })
+            } catch {
+              // Ignore stale event jobs that no longer exist.
+            }
+          })
+        )
+      } catch {
+        // Ignore transient watcher polling errors.
+      }
+    }
+
+    pollEvents()
+    const intervalId = setInterval(pollEvents, 2000)
+    return () => {
+      active = false
+      clearInterval(intervalId)
+      completionTimeouts.forEach((timeoutId) => clearTimeout(timeoutId))
+      completionTimeouts.clear()
+    }
+  }, [addJob, notebookId])
+
   return (
     <>
       <CollapsibleColumn
@@ -189,6 +291,49 @@ export function SourcesColumn({
               </div>
             ) : (
               <div className="space-y-6">
+                {notebookJobs.length > 0 && (
+                  <div className="space-y-3">
+                    {notebookJobs.map((job) => (
+                      <div
+                        key={job.id}
+                        className="rounded-lg border border-teal-200 bg-teal-50 p-3"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-medium truncate">{job.paperName}</p>
+                          <span className="text-xs text-muted-foreground">
+                            {job.stage === 'complete' ? '✓ Ready' : STAGE_LABEL[job.stage]}
+                          </span>
+                        </div>
+                        <div className="mt-2 h-1.5 w-full rounded-full bg-teal-100">
+                          <div
+                            className="h-1.5 rounded-full bg-teal-600 transition-all duration-500"
+                            style={{ width: `${job.progress}%` }}
+                          />
+                        </div>
+                        {job.stage === 'error' && (
+                          <div className="mt-2 flex items-center justify-between gap-2">
+                            <p className="text-xs text-red-600 truncate">
+                              {job.errorMessage || 'Processing failed'}
+                            </p>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              disabled={!job.sourceId}
+                              onClick={() => {
+                                if (job.sourceId) {
+                                  handleRetry(job.sourceId)
+                                }
+                              }}
+                            >
+                              Retry
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {/* Sources Section */}
                 {!sources || sources.length === 0 ? (
                   <EmptyState

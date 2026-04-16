@@ -17,6 +17,7 @@ from papermind.db.vector_store import vector_store
 from papermind.generators.academic_note_generator import AcademicNoteGenerator
 from papermind.graph.citation_linker import CitationLinker
 from papermind.graph.graph_builder import build_similarity_edges
+from papermind.api.progress_state import progress_registry
 from papermind.models import AcademicPaper, Atom
 from papermind.parsers.academic_pdf_parser import AcademicPDFParser, ParsedPaper
 from papermind.tagging.concept_saver import save_concepts
@@ -51,6 +52,15 @@ class IngestErrorResponse(BaseModel):
     error_stage: str
     detail: str
     status: str
+
+
+class IngestAsyncResponse(BaseModel):
+    job_id: str
+    notebook_id: str
+    paper_name: str
+    stage: str
+    progress: int
+    status: Literal["queued"]
 
 
 def _error_detail(
@@ -158,11 +168,14 @@ async def _run_ingest_pipeline(
     pdf_path: str,
     notebook_id: str,
     triggered_by: Literal["upload", "upload_form", "watcher", "manual_scan"],
+    progress_job_id: Optional[str] = None,
 ) -> IngestResponse:
     logger.info(
         f"Starting ingest pipeline for {pdf_path} "
         f"(notebook_id={notebook_id}, triggered_by={triggered_by})"
     )
+    if progress_job_id:
+        progress_registry.update_job(progress_job_id, stage="parsing")
 
     # 1. DEDUP
     try:
@@ -182,6 +195,12 @@ async def _run_ingest_pipeline(
     )
     if existing_rows:
         logger.info(f"Duplicate ingest skipped for {pdf_path}")
+        if progress_job_id:
+            progress_registry.update_job(
+                progress_job_id,
+                stage="complete",
+                source_id=str(existing_rows[0].get("id")),
+            )
         return IngestResponse(
             source_id=str(existing_rows[0].get("id")),
             paper_id="",
@@ -200,8 +219,20 @@ async def _run_ingest_pipeline(
             notebook_id=notebook_id,
             file_hash=file_hash,
         )
+        if progress_job_id:
+            progress_registry.update_job(
+                progress_job_id,
+                stage="parsing",
+                source_id=source_id,
+            )
     except Exception as exc:
         logger.exception(f"Ingest failed creating source record for {pdf_path}")
+        if progress_job_id:
+            progress_registry.update_job(
+                progress_job_id,
+                stage="error",
+                error_message=str(exc),
+            )
         raise HTTPException(
             status_code=500,
             detail=_error_detail(None, "source", str(exc), "source_error"),
@@ -213,6 +244,13 @@ async def _run_ingest_pipeline(
     except Exception as exc:
         logger.exception(f"Ingest parse failed for source {source_id}")
         await update_source_status(source_id, "parse_error")
+        if progress_job_id:
+            progress_registry.update_job(
+                progress_job_id,
+                stage="error",
+                source_id=source_id,
+                error_message=str(exc),
+            )
         raise HTTPException(
             status_code=422,
             detail=_error_detail(source_id, "parse", str(exc), "parse_error"),
@@ -226,6 +264,13 @@ async def _run_ingest_pipeline(
     except Exception as exc:
         logger.exception(f"Ingest paper save failed for source {source_id}")
         await update_source_status(source_id, "paper_error")
+        if progress_job_id:
+            progress_registry.update_job(
+                progress_job_id,
+                stage="error",
+                source_id=source_id,
+                error_message=str(exc),
+            )
         raise HTTPException(
             status_code=500,
             detail=_error_detail(source_id, "paper", str(exc), "paper_error"),
@@ -233,8 +278,12 @@ async def _run_ingest_pipeline(
 
     # 5. ATOMIZE + EMBED
     try:
+        if progress_job_id:
+            progress_registry.update_job(progress_job_id, stage="atomizing", source_id=source_id)
         atoms = chunk_paper_into_atoms(parsed, paper_id)
         atom_ids = await _save_atoms_to_db(atoms)
+        if progress_job_id:
+            progress_registry.update_job(progress_job_id, stage="embedding", source_id=source_id)
         embeddings = await embedder.embed_batch([atom.content for atom in atoms]) if atoms else []
 
         for atom, embedding in zip(atoms, embeddings):
@@ -246,6 +295,13 @@ async def _run_ingest_pipeline(
     except Exception as exc:
         logger.exception(f"Ingest embed failed for source {source_id}")
         await update_source_status(source_id, "embed_error")
+        if progress_job_id:
+            progress_registry.update_job(
+                progress_job_id,
+                stage="error",
+                source_id=source_id,
+                error_message=str(exc),
+            )
         raise HTTPException(
             status_code=500,
             detail=_error_detail(source_id, "embed", str(exc), "embed_error"),
@@ -258,6 +314,13 @@ async def _run_ingest_pipeline(
     except Exception as exc:
         logger.exception(f"Ingest similarity edge build failed for source {source_id}")
         await update_source_status(source_id, "graph_error")
+        if progress_job_id:
+            progress_registry.update_job(
+                progress_job_id,
+                stage="error",
+                source_id=source_id,
+                error_message=str(exc),
+            )
         raise HTTPException(
             status_code=500,
             detail=_error_detail(source_id, "graph", str(exc), "graph_error"),
@@ -269,11 +332,20 @@ async def _run_ingest_pipeline(
 
     # 7. NOTE GENERATION
     try:
+        if progress_job_id:
+            progress_registry.update_job(progress_job_id, stage="note_generating", source_id=source_id)
         note = await note_generator.generate_note(paper, raw_text=parsed.raw_text or "")
         logger.info(f"Generated note {note.note_id} for paper {paper_id}")
     except Exception as exc:
         logger.exception(f"Ingest note generation failed for source {source_id}")
         await update_source_status(source_id, "note_error")
+        if progress_job_id:
+            progress_registry.update_job(
+                progress_job_id,
+                stage="error",
+                source_id=source_id,
+                error_message=str(exc),
+            )
         raise HTTPException(
             status_code=500,
             detail=_error_detail(source_id, "note", str(exc), "note_error"),
@@ -291,6 +363,13 @@ async def _run_ingest_pipeline(
     except Exception as exc:
         logger.exception(f"Ingest concept save failed for source {source_id}")
         await update_source_status(source_id, "tag_error")
+        if progress_job_id:
+            progress_registry.update_job(
+                progress_job_id,
+                stage="error",
+                source_id=source_id,
+                error_message=str(exc),
+            )
         raise HTTPException(
             status_code=500,
             detail=_error_detail(source_id, "tag", str(exc), "tag_error"),
@@ -310,6 +389,12 @@ async def _run_ingest_pipeline(
         title=final_title,
         full_text=parsed.raw_text,
     )
+    if progress_job_id:
+        progress_registry.update_job(
+            progress_job_id,
+            stage="complete",
+            source_id=source_id,
+        )
     return IngestResponse(
         source_id=source_id,
         paper_id=paper_id,
@@ -320,6 +405,39 @@ async def _run_ingest_pipeline(
         note_id=note.note_id or "",
         status="complete",
     )
+
+
+async def _run_ingest_job(
+    job_id: str,
+    pdf_path: str,
+    notebook_id: str,
+    triggered_by: Literal["upload", "upload_form", "watcher", "manual_scan"],
+    cleanup_file: bool = False,
+):
+    try:
+        await _run_ingest_pipeline(
+            pdf_path=pdf_path,
+            notebook_id=notebook_id,
+            triggered_by=triggered_by,
+            progress_job_id=job_id,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"detail": str(exc.detail)}
+        progress_registry.update_job(
+            job_id,
+            stage="error",
+            source_id=detail.get("source_id"),
+            error_message=str(detail.get("detail") or "Ingest failed"),
+        )
+    except Exception as exc:
+        progress_registry.update_job(job_id, stage="error", error_message=str(exc))
+        logger.exception(f"Unhandled ingest job failure for job {job_id}")
+    finally:
+        if cleanup_file and pdf_path and os.path.exists(pdf_path):
+            try:
+                os.remove(pdf_path)
+            except OSError as cleanup_exc:
+                logger.warning(f"Failed to cleanup temp upload file {pdf_path}: {cleanup_exc}")
 
 
 @ingest_router.post(
@@ -405,6 +523,93 @@ async def upload_and_ingest(
                 os.remove(temp_file_path)
             except OSError as exc:
                 logger.warning(f"Failed to cleanup temp upload file {temp_file_path}: {exc}")
+
+
+@ingest_router.post(
+    "/upload-async",
+    response_model=IngestAsyncResponse,
+    responses={422: {"model": IngestErrorResponse}, 500: {"model": IngestErrorResponse}},
+)
+async def upload_and_ingest_async(
+    file: UploadFile = File(...),
+    notebook_id: str = Form(...),
+    triggered_by: Literal["upload", "upload_form", "watcher", "manual_scan"] = Form("upload"),
+):
+    if not file.filename:
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(None, "source", "Uploaded file is missing filename", "source_error"),
+        )
+
+    suffix = Path(file.filename).suffix.lower()
+    if suffix != ".pdf":
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(None, "source", "Only PDF files are accepted", "validation_error"),
+        )
+
+    temp_file_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+            temp_file_path = temp_file.name
+            total_bytes = 0
+            first_chunk = True
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_UPLOAD_SIZE:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=_error_detail(
+                            None,
+                            "source",
+                            f"File exceeds maximum size of {MAX_UPLOAD_SIZE // (1024 * 1024)}MB",
+                            "validation_error",
+                        ),
+                    )
+                if first_chunk and not chunk[:5].startswith(b"%PDF-"):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=_error_detail(None, "source", "File is not a valid PDF", "validation_error"),
+                    )
+                first_chunk = False
+                temp_file.write(chunk)
+
+        trigger = "watcher" if triggered_by == "watcher" else "manual"
+        job = progress_registry.create_job(
+            notebook_id=notebook_id,
+            paper_name=file.filename,
+            trigger=trigger,
+        )
+        asyncio.create_task(
+            _run_ingest_job(
+                job_id=job.id,
+                pdf_path=temp_file_path,
+                notebook_id=notebook_id,
+                triggered_by=triggered_by,
+                cleanup_file=True,
+            )
+        )
+
+        return IngestAsyncResponse(
+            job_id=job.id,
+            notebook_id=job.notebook_id,
+            paper_name=job.paper_name,
+            stage=job.stage,
+            progress=job.progress,
+            status="queued",
+        )
+    except HTTPException:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except OSError as exc:
+                logger.warning(f"Failed to cleanup temp upload file {temp_file_path}: {exc}")
+        raise
+    finally:
+        await file.close()
 
 
 # ---------------------------------------------------------------------------

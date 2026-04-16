@@ -8,8 +8,9 @@ import {
   SourceStatusResponse,
   CreateSourceRequest,
   UpdateSourceRequest,
-  IngestResponse,
-  IngestErrorResponse,
+  IngestAsyncResponse,
+  UploadProgressEventsResponse,
+  UploadProgressJobResponse,
 } from '@/lib/types/api'
 
 export const sourcesApi = {
@@ -44,7 +45,7 @@ export const sourcesApi = {
 
       formData.append('triggered_by', 'upload_form')
 
-      const response = await apiClient.post<IngestResponse>('/papermind/upload', formData)
+      const response = await apiClient.post<IngestAsyncResponse>('/papermind/upload-async', formData)
       return response.data
     }
 
@@ -119,5 +120,20 @@ export const sourcesApi = {
     return apiClient.get(`/sources/${id}/download`, {
       responseType: 'blob',
     })
+  },
+
+  getUploadProgress: async (jobId: string) => {
+    const response = await apiClient.get<UploadProgressJobResponse>(`/papermind/progress/${jobId}`)
+    return response.data
+  },
+
+  listUploadEvents: async (notebookId: string, after = 0) => {
+    const response = await apiClient.get<UploadProgressEventsResponse>('/papermind/progress/events/list', {
+      params: {
+        notebook_id: notebookId,
+        after,
+      },
+    })
+    return response.data
   },
 }
