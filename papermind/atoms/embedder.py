@@ -47,6 +47,7 @@ class AtomEmbedder:
             client = openai.AsyncClient()
             response = await client.embeddings.create(input=atom_content, model=self.model)
             embedding = response.data[0].embedding
+            return self._normalize_embedding(embedding)
         else:
             async with httpx.AsyncClient() as client:
                 res = await client.post(

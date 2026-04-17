@@ -42,6 +42,7 @@ dependencies = [
     "pycountry>=26.2.16",
     "babel>=2.18.0",
     "watchdog>=4.0.0",
+    "pymupdf4llm",
 ]
 
 [tool.setuptools]

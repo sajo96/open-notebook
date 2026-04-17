@@ -16,6 +16,11 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from open_notebook.ai.provision import provision_langchain_model
 
+try:
+    import pymupdf4llm  # type: ignore
+except Exception:
+    pymupdf4llm = None
+
 logger = logging.getLogger(__name__)
 
 _SCHOLARLY_LOCK = threading.Lock()
@@ -33,6 +38,12 @@ SECTION_PATTERN = re.compile(
     r"^(abstract|introduction|background|methods?|materials and methods|results?|discussion|conclusion|references)\s*$",
     re.IGNORECASE,
 )
+MARKDOWN_HEADING_PATTERN = re.compile(r"^#{1,6}\s+(.+?)\s*$")
+
+ParserBackend = Literal["auto", "pymupdf", "pymupdf4llm"]
+ResolvedParserBackend = Literal["pymupdf", "pymupdf4llm"]
+PARSER_BACKEND_ENV = "PAPERMIND_PDF_PARSER_BACKEND"
+DEFAULT_PARSER_BACKEND: ResolvedParserBackend = "pymupdf4llm"
 
 
 @dataclass
@@ -434,6 +445,15 @@ def _sections_from_boundaries(raw_text: str, boundaries: dict[str, int]) -> dict
     return sections if sections else {"full_text": raw_text}
 
 
+def _normalize_backend_name(raw_backend: str | None) -> ParserBackend:
+    backend = str(raw_backend or "").strip().lower()
+    if backend in {"pymupdf", "fitz"}:
+        return "pymupdf"
+    if backend in {"pymupdf4llm", "pymupdf4lmm", "4llm", "markdown"}:
+        return "pymupdf4llm"
+    return "auto"
+
+
 async def _detect_sections_with_llm(raw_text: str) -> dict[str, int]:
     prompt_text = (
         "Identify the section boundaries in this academic paper text. "
@@ -458,32 +478,108 @@ async def _detect_sections_with_llm(raw_text: str) -> dict[str, int]:
 
 
 class AcademicPDFParser:
-    def __init__(self, file_path: str):
+    def __init__(self, file_path: str, parser_backend: str | ParserBackend | None = None):
         self.file_path = file_path
         self.is_ocr = False
+        self.parser_backend_requested: ParserBackend = _normalize_backend_name(parser_backend)
+        self.parser_backend_used: ResolvedParserBackend = "pymupdf"
+
+    def _resolve_backend(self) -> ResolvedParserBackend:
+        requested = self.parser_backend_requested
+        if requested == "auto":
+            requested = _normalize_backend_name(os.environ.get(PARSER_BACKEND_ENV))
+        if requested == "auto":
+            requested = DEFAULT_PARSER_BACKEND
+
+        if requested == "pymupdf4llm" and pymupdf4llm is None:
+            logger.warning(
+                "PyMuPDF4LLM requested but not installed. Falling back to PyMuPDF. "
+                "Install package 'pymupdf4llm' to enable it."
+            )
+            return "pymupdf"
+
+        return "pymupdf4llm" if requested == "pymupdf4llm" else "pymupdf"
+
+    def _extract_text_with_pymupdf(self) -> tuple[str, str | None, str | None]:
+        raw_text = ""
+        metadata_title: str | None = None
+        first_page_title: str | None = None
+
+        with fitz.open(self.file_path) as doc:
+            metadata_title = _extract_metadata_title(doc)
+            first_page_title = _extract_title_from_first_page(doc)
+            for page in doc:
+                page_text = _extract_page_text(page)
+                if len(page_text.strip()) < 200 and os.environ.get("PAPERMIND_ENABLE_OCR", "true").lower() == "true":
+                    self.is_ocr = True
+                    pix = page.get_pixmap()
+                    if pix.alpha:
+                        img = Image.frombytes("RGBA", (pix.width, pix.height), pix.samples)
+                    else:
+                        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    page_text = pytesseract.image_to_string(img)
+                raw_text += page_text + "\n"
+
+        return raw_text, metadata_title, first_page_title
+
+    def _extract_text_with_pymupdf4llm(self) -> tuple[str, str | None, str | None]:
+        if pymupdf4llm is None:
+            raise RuntimeError("PyMuPDF4LLM is not installed")
+
+        markdown_text = pymupdf4llm.to_markdown(self.file_path)
+        if isinstance(markdown_text, list):
+            parts: list[str] = []
+            for item in markdown_text:
+                if isinstance(item, dict):
+                    chunk = item.get("text") or item.get("markdown") or item.get("content") or ""
+                    parts.append(str(chunk))
+                else:
+                    parts.append(str(item))
+            raw_text = "\n\n".join(part.strip() for part in parts if str(part).strip())
+        else:
+            raw_text = str(markdown_text or "")
+
+        metadata_title: str | None = None
+        first_page_title: str | None = None
+        try:
+            with fitz.open(self.file_path) as doc:
+                metadata_title = _extract_metadata_title(doc)
+                first_page_title = _extract_title_from_first_page(doc)
+        except Exception as exc:
+            logger.debug(f"Failed to extract title hints while using PyMuPDF4LLM for {self.file_path}: {exc}")
+
+        return raw_text, metadata_title, first_page_title
 
     def parse(self) -> ParsedPaper:
         raw_text = ""
         metadata_title: str | None = None
         first_page_title: str | None = None
+        self.is_ocr = False
 
+        self.parser_backend_used = self._resolve_backend()
         try:
-            with fitz.open(self.file_path) as doc:
-                metadata_title = _extract_metadata_title(doc)
-                first_page_title = _extract_title_from_first_page(doc)
-                for page in doc:
-                    page_text = _extract_page_text(page)
-                    if len(page_text.strip()) < 200 and os.environ.get("PAPERMIND_ENABLE_OCR", "true").lower() == "true":
-                        self.is_ocr = True
-                        pix = page.get_pixmap()
-                        if pix.alpha:
-                            img = Image.frombytes("RGBA", (pix.width, pix.height), pix.samples)
-                        else:
-                            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                        page_text = pytesseract.image_to_string(img)
-                    raw_text += page_text + "\n"
+            if self.parser_backend_used == "pymupdf4llm":
+                raw_text, metadata_title, first_page_title = self._extract_text_with_pymupdf4llm()
+                if len(raw_text.strip()) < 200:
+                    logger.warning(
+                        f"PyMuPDF4LLM returned limited text for {self.file_path}. Falling back to PyMuPDF extraction."
+                    )
+                    raw_text, metadata_title, first_page_title = self._extract_text_with_pymupdf()
+                    self.parser_backend_used = "pymupdf"
+            else:
+                raw_text, metadata_title, first_page_title = self._extract_text_with_pymupdf()
         except Exception as e:
-            logger.error(f"Failed to extract text from PDF {self.file_path}: {e}")
+            logger.error(
+                f"Failed to extract text from PDF {self.file_path} using {self.parser_backend_used}: {e}"
+            )
+            if self.parser_backend_used != "pymupdf":
+                try:
+                    raw_text, metadata_title, first_page_title = self._extract_text_with_pymupdf()
+                    self.parser_backend_used = "pymupdf"
+                except Exception as fallback_exc:
+                    logger.error(
+                        f"Fallback PyMuPDF extraction also failed for {self.file_path}: {fallback_exc}"
+                    )
 
         doi = find_doi(raw_text)
         title: str = "Unknown Title"
@@ -515,7 +611,7 @@ class AcademicPDFParser:
             first_page_title=first_page_title,
         )
         logger.info(
-            f"Title extracted via {title_source} (confidence={title_confidence:.2f}): {title[:120]}"
+            f"Title extracted via {title_source} (confidence={title_confidence:.2f}, parser={self.parser_backend_used}): {title[:120]}"
         )
 
         if title == "Unknown Title" or not authors or year is None or abstract is None:
@@ -563,6 +659,15 @@ class AcademicPDFParser:
             line_clean = line.strip()
             if not line_clean:
                 current_text.append(line)
+                continue
+
+            markdown_heading = MARKDOWN_HEADING_PATTERN.match(line_clean)
+            if markdown_heading:
+                heading = markdown_heading.group(1).strip()
+                if current_text:
+                    sections[_normalize_section_name(current_section)] = "\n".join(current_text).strip()
+                current_section = heading or current_section
+                current_text = []
                 continue
 
             if SECTION_PATTERN.match(line_clean) or (line_clean.isupper() and 3 < len(line_clean) < 80):
