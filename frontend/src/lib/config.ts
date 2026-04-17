@@ -58,7 +58,7 @@ export async function getConfig(): Promise<AppConfig> {
  */
 async function fetchConfig(): Promise<AppConfig> {
   const isDev = process.env.NODE_ENV === 'development'
-  
+
   if (isDev) {
     console.log('🔧 [Config] Starting configuration detection...')
     console.log('🔧 [Config] Build time:', BUILD_TIME)
@@ -97,7 +97,7 @@ async function fetchConfig(): Promise<AppConfig> {
   const defaultApiUrl = ''
 
   if (typeof window !== 'undefined' && isDev) {
-      console.log('🔧 [Config] Using relative path (rewrites) as default')
+    console.log('🔧 [Config] Using relative path (rewrites) as default')
   }
 
   // Priority: Runtime config > Build-time env var > Smart default
@@ -106,8 +106,8 @@ async function fetchConfig(): Promise<AppConfig> {
   if (isDev) {
     console.log('🔧 [Config] Final base URL to try:', baseUrl)
     console.log('🔧 [Config] Selection priority: runtime=' + (runtimeApiUrl ? '✅' : '❌') +
-                ', build-time=' + (envApiUrl ? '✅' : '❌') +
-                ', smart-default=' + (!runtimeApiUrl && !envApiUrl ? '✅' : '❌'))
+      ', build-time=' + (envApiUrl ? '✅' : '❌') +
+      ', smart-default=' + (!runtimeApiUrl && !envApiUrl ? '✅' : '❌'))
   }
 
   try {
@@ -123,8 +123,6 @@ async function fetchConfig(): Promise<AppConfig> {
         apiUrl: baseUrl, // Use baseUrl from runtime-config (Python no longer returns this)
         version: data.version || 'unknown',
         buildTime: BUILD_TIME,
-        latestVersion: data.latestVersion || null,
-        hasUpdate: data.hasUpdate || false,
         dbStatus: data.dbStatus, // Can be undefined for old backends
       }
       if (isDev) console.log('✅ [Config] Successfully loaded API config:', config)

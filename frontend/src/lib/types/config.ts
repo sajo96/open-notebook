@@ -5,8 +5,6 @@
  */
 export interface BackendConfigResponse {
   version: string
-  latestVersion?: string | null
-  hasUpdate?: boolean
   dbStatus?: "online" | "offline"
 }
 
@@ -18,8 +16,6 @@ export interface AppConfig {
   apiUrl: string
   version: string
   buildTime: string
-  latestVersion?: string | null
-  hasUpdate?: boolean
   dbStatus?: "online" | "offline"
 }
 
