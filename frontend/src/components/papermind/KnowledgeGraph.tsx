@@ -13,7 +13,6 @@ export default function KnowledgeGraph({ notebookId }: { notebookId: string }) {
     const [minSharedConcepts, setMinSharedConcepts] = useState<number>(2);
     const [conceptFilter, setConceptFilter] = useState<string>("");
     const [showConceptNodes, setShowConceptNodes] = useState<boolean>(false);
-    const [showEdgeLabels, setShowEdgeLabels] = useState<boolean>(false);
     const [edgeMode, setEdgeMode] = useState<"concept_similarity" | "cites" | "similar_to">("concept_similarity");
     const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
     const [hasLoadedGraphOnce, setHasLoadedGraphOnce] = useState<boolean>(false);
@@ -155,24 +154,6 @@ export default function KnowledgeGraph({ notebookId }: { notebookId: string }) {
                     </select>
                 </div>
 
-                <label className="flex items-center gap-2 text-xs font-medium">
-                    <input
-                        type="checkbox"
-                        checked={showConceptNodes}
-                        onChange={(e) => setShowConceptNodes(e.target.checked)}
-                    />
-                    Show concept nodes (yellow circles)
-                </label>
-
-                <label className="flex items-center gap-2 text-xs font-medium">
-                    <input
-                        type="checkbox"
-                        checked={showEdgeLabels}
-                        onChange={(e) => setShowEdgeLabels(e.target.checked)}
-                    />
-                    Show connection labels
-                </label>
-
                 <div className="flex flex-col gap-2">
                     <label className="text-xs font-medium">Similarity Threshold: {minSim}</label>
                     <input
@@ -199,14 +180,6 @@ export default function KnowledgeGraph({ notebookId }: { notebookId: string }) {
                     />
                 </div>
 
-                <div className="rounded-md border border-border/70 bg-background/60 p-2 text-[11px] leading-4">
-                    <div className="mb-1 font-semibold uppercase tracking-wide text-foreground/80">Legend</div>
-                    <div className="flex items-center gap-2"><span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#01696f" }} />Paper node</div>
-                    <div className="flex items-center gap-2"><span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#d19900" }} />Concept node</div>
-                    <div className="flex items-center gap-2"><span className="inline-block h-[2px] w-4" style={{ backgroundColor: "rgba(245, 183, 0, 0.7)" }} />Concept similarity edge</div>
-                    <div className="flex items-center gap-2"><span className="inline-block h-[2px] w-4" style={{ backgroundColor: "rgba(1, 105, 111, 0.6)" }} />Citation edge</div>
-                    <div className="flex items-center gap-2"><span className="inline-block h-[2px] w-4" style={{ backgroundColor: "rgba(186, 185, 180, 0.4)" }} />Vector similarity edge</div>
-                </div>
 
             </div>
 
