@@ -1,7 +1,21 @@
 import { http, HttpResponse } from 'msw'
-import { mockNotes } from '../data'
+import { mockNotes } from '../data/notes'
+import { NoteResponse } from '@/lib/types/api'
 
-let notes = [...mockNotes]
+type MockNote = NoteResponse & {
+  source_id?: string | null
+  notebook_id?: string | null
+}
+
+type NoteUpsertBody = {
+  title?: string
+  content?: string
+  note_type?: string
+  source_id?: string | null
+  notebook_id?: string | null
+}
+
+let notes: MockNote[] = [...(mockNotes as MockNote[])]
 
 export const noteHandlers = [
   // GET /api/notes
@@ -32,7 +46,7 @@ export const noteHandlers = [
 
   // POST /api/notes
   http.post('/api/notes', async ({ request }) => {
-    const body = await request.json() as any
+    const body = await request.json() as NoteUpsertBody
     const newNote = {
       id: `note-${Date.now()}`,
       title: body.title || 'New Note',
@@ -49,7 +63,7 @@ export const noteHandlers = [
 
   // PUT /api/notes/:id
   http.put('/api/notes/:id', async ({ params, request }) => {
-    const body = await request.json()
+    const body = await request.json() as NoteUpsertBody
     const idx = notes.findIndex(n => n.id === params.id)
     if (idx === -1) return new HttpResponse(null, { status: 404 })
 

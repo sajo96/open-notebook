@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw'
-import { mockModels } from '../data'
+import { mockModels } from '../data/models'
 
 export const modelHandlers = [
   // GET /api/models
@@ -34,7 +34,7 @@ export const modelHandlers = [
 
   // PUT /api/models/defaults
   http.put('/api/models/defaults', async ({ request }) => {
-    const body = await request.json()
+    const body = await request.json() as Record<string, unknown>
     return HttpResponse.json({ ...body })
   }),
 

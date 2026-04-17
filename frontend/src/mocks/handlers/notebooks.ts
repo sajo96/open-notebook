@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw'
-import { mockNotebooks } from '../data'
+import { mockNotebooks } from '../data/notebooks'
 
 let notebooks = [...mockNotebooks]
 

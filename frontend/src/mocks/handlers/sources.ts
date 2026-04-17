@@ -1,5 +1,6 @@
 import { http, HttpResponse } from 'msw'
-import { mockSources, mockNotes } from '../data'
+import { mockSources } from '../data/sources'
+import { mockNotes } from '../data/notes'
 import { SourceDetailResponse } from '@/lib/types/api'
 
 type SourceCreateBody = {

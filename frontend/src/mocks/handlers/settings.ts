@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw'
-import { mockSettings } from '../data'
+import { mockSettings } from '../data/settings'
 
 export const settingsHandlers = [
   // GET /api/settings
@@ -9,7 +9,7 @@ export const settingsHandlers = [
 
   // PUT /api/settings
   http.put('/api/settings', async ({ request }) => {
-    const body = await request.json()
+    const body = await request.json() as Record<string, unknown>
     return HttpResponse.json({ ...mockSettings, ...body })
   }),
 ]
