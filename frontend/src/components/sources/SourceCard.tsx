@@ -288,15 +288,12 @@ export function SourceCard({
   const pipelineLabel = pipelineStage ? PIPELINE_STAGE_LABELS[pipelineStage] || pipelineStage : null
   const pipelineError = paperStatusData?.error_message || null
   const titleSource = paperStatusData?.title_source ?? undefined
-  const titleConfidence = paperStatusData?.title_confidence ?? undefined
   const showTitleQualityBadge = !!titleSource && ['heuristic', 'llm', 'raw_text', 'unknown'].includes(titleSource)
   const titleBadgeLabel = titleSource ? TITLE_SOURCE_LABELS[titleSource] || 'Unverified title' : 'Unverified title'
-  const titleBadgeVariant = titleSource === 'unknown' ? 'destructive' : 'secondary'
-  const titleBadgeTitle = typeof titleConfidence === 'number'
-    ? `Title source: ${titleSource}, confidence: ${(titleConfidence * 100).toFixed(0)}%`
-    : `Title source: ${titleSource}`
   const pipelineInProgress = !!pipelineStage && !['done', 'failed'].includes(pipelineStage)
   const shouldShowPipelineBadge = !!pipelineLabel && (pipelineStage !== 'done' || showDoneStageBadge)
+  const sourceTypeTooltip = `${t.common.source}: ${sourceType === 'link' ? t.sources.addUrl : sourceType === 'upload' ? t.sources.uploadFile : t.sources.enterText}`
+  const titleStatusTooltip = titleSource === 'unknown' ? '? No title' : titleBadgeLabel
 
   useEffect(() => {
     if (pipelineStage === 'done') {
@@ -401,10 +398,26 @@ export function SourceCard({
               )}
             </div>
 
-            {/* Source type indicator */}
-            <div className="flex items-center gap-1 text-gray-500 mb-1">
-              <SourceTypeIcon className="h-3 w-3" />
-              <span className="text-xs capitalize">{t.common.source}</span>
+            <div className="mb-2 flex items-center gap-2 text-gray-500">
+              <span
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border/60 bg-muted/20"
+                title={sourceTypeTooltip}
+                aria-label={sourceTypeTooltip}
+              >
+                <SourceTypeIcon className="h-3.5 w-3.5" />
+              </span>
+              {showTitleQualityBadge && (
+                <span
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border/60 bg-muted/20"
+                  title={titleStatusTooltip}
+                  aria-label={titleStatusTooltip}
+                >
+                  <AlertTriangle className={cn(
+                    'h-3.5 w-3.5',
+                    titleSource === 'unknown' ? 'text-red-600' : 'text-amber-600'
+                  )} />
+                </span>
+              )}
             </div>
 
             {/* Processing message for active statuses */}
@@ -427,26 +440,8 @@ export function SourceCard({
               </div>
             )}
 
-            {showTitleQualityBadge && (
-              <div className="mb-2">
-                <Badge
-                  variant={titleBadgeVariant}
-                  className="text-xs"
-                  title={titleBadgeTitle}
-                >
-                  {titleSource === 'unknown' ? '? No title' : '⚠ Unverified title'}
-                </Badge>
-              </div>
-            )}
-
             {/* Metadata badges */}
             <div className="flex items-center gap-2 flex-wrap">
-              {/* Source type badge */}
-              <Badge variant="secondary" className="text-xs flex items-center gap-1">
-                <SourceTypeIcon className="h-3 w-3" />
-                {sourceType === 'link' ? t.sources.addUrl : sourceType === 'upload' ? t.sources.uploadFile : t.sources.enterText}
-              </Badge>
-
               {isCompleted && source.insights_count > 0 && (
                 <Badge variant="outline" className="text-xs">
                   {t.sources.insightsCount.replace('{count}', source.insights_count.toString())}
