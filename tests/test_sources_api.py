@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from open_notebook.config import UPLOADS_FOLDER
-from open_notebook.domain.notebook import Source
+from open_notebook.domain.notebook import Asset, Source
 
 
 @pytest.fixture
@@ -176,6 +176,32 @@ async def test_sources_list_includes_status(mock_repo_query, client):
     body = response.json()
     assert body[0]["status"] == "running"
     assert body[0]["command_id"] == "command:1"
+
+
+@pytest.mark.asyncio
+async def test_resolve_source_file_generates_fallback_for_missing_legacy_temp_file(tmp_path):
+    from api.routers.sources import _resolve_source_file
+
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    source = MagicMock()
+    source.asset = Asset(file_path=str(tmp_path / "missing-temp.pdf"))
+    source.full_text = "Fallback content from stored source text"
+    source.title = "Legacy Paper"
+    source.save = AsyncMock()
+
+    with (
+        patch("api.routers.sources.UPLOADS_FOLDER", str(uploads_dir)),
+        patch("api.routers.sources.Source.get", new=AsyncMock(return_value=source)),
+    ):
+        resolved_path, filename = await _resolve_source_file("source:legacy")
+
+    assert resolved_path.startswith(str(uploads_dir.resolve()))
+    assert os.path.exists(resolved_path)
+    assert filename.endswith(".pdf")
+    assert source.asset.file_path == resolved_path
+    source.save.assert_awaited_once()
 
 
 if __name__ == "__main__":

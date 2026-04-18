@@ -683,3 +683,28 @@ class NotebookDeleteResponse(BaseModel):
     unlinked_sources: int = Field(
         ..., description="Number of sources unlinked from notebook"
     )
+
+
+# Annotation models
+class AnnotationCreate(BaseModel):
+    """Request to create a new annotation on a PDF source."""
+    page_number: int
+    annotation_type: Literal["highlight", "underline", "note"]
+    selected_text: str
+    bounding_boxes: List[Dict[str, float]]  # [{x1, y1, x2, y2}, ...]
+    color: Optional[str] = None
+    comment: Optional[str] = None
+
+
+class AnnotationResponse(BaseModel):
+    """Response for annotation records."""
+    id: str
+    source_id: str
+    page_number: int
+    annotation_type: str
+    selected_text: str
+    bounding_boxes: List[Dict[str, float]]
+    color: Optional[str] = None
+    comment: Optional[str] = None
+    created_at: str
+    updated_at: str

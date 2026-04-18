@@ -1,11 +1,28 @@
 import os
+import shutil
+from pathlib import Path
 from typing import Optional
 
 from loguru import logger
 
 from open_notebook.database.repository import ensure_record_id, repo_query
+from open_notebook.config import UPLOADS_FOLDER
 from open_notebook.domain.notebook import Asset, Source
 from papermind.utils import _normalize_notebook_id
+
+
+def _persist_source_pdf(pdf_path: str, file_hash: str) -> str:
+    source_path = Path(pdf_path).expanduser().resolve()
+    uploads_dir = Path(UPLOADS_FOLDER).expanduser().resolve()
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = source_path.suffix.lower() or ".pdf"
+    persisted_path = uploads_dir / f"{file_hash}{suffix}"
+
+    if source_path != persisted_path:
+        shutil.copy2(source_path, persisted_path)
+
+    return str(persisted_path)
 
 
 async def create_source_record(
@@ -21,11 +38,12 @@ async def create_source_record(
     surfaced in UI flows that rely on `source` existence.
     """
     normalized_notebook_id = _normalize_notebook_id(notebook_id)
+    persisted_pdf_path = _persist_source_pdf(pdf_path, file_hash)
 
     source = Source(
         title=title or os.path.basename(pdf_path),
         topics=[],
-        asset=Asset(file_path=pdf_path),
+        asset=Asset(file_path=persisted_pdf_path),
     )
     await source.save()
 

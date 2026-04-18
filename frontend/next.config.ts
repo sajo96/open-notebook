@@ -12,6 +12,17 @@ const nextConfig: NextConfig = {
     proxyClientMaxBodySize: '100mb',
   } as NextConfig['experimental'],
 
+  // Configure webpack for PDF.js
+  webpack: (config) => {
+    // Exclude canvas dependency for pdfjs-dist (not needed in browser environment)
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      canvas: false,
+    }
+
+    return config
+  },
+
   // API Rewrites: Proxy /api/* requests to FastAPI backend
   // This simplifies reverse proxy configuration - users only need to proxy to port 8502
   // Next.js handles internal routing to the API backend on port 5055

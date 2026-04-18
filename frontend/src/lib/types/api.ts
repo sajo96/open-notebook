@@ -277,3 +277,26 @@ export interface BuildContextResponse {
   token_count: number
   char_count: number
 }
+
+// Annotation types for PDF reader
+export interface AnnotationCreate {
+  page_number: number
+  annotation_type: 'highlight' | 'underline' | 'note'
+  selected_text: string
+  bounding_boxes: Array<{ x1: number; y1: number; x2: number; y2: number }>
+  color?: string
+  comment?: string
+}
+
+export interface AnnotationResponse {
+  id: string
+  source_id: string
+  page_number: number
+  annotation_type: string
+  selected_text: string
+  bounding_boxes: Array<{ x1: number; y1: number; x2: number; y2: number }>
+  color?: string
+  comment?: string
+  created_at: string
+  updated_at: string
+}

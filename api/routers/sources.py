@@ -1,6 +1,9 @@
 import asyncio
 import hashlib
 import os
+import re
+import shutil
+import textwrap
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -37,6 +40,135 @@ from open_notebook.domain.transformation import Transformation
 from open_notebook.exceptions import InvalidInputError, NotFoundError
 
 router = APIRouter()
+
+
+def _is_under_directory(path: str, root: str) -> bool:
+    root_with_sep = root if root.endswith(os.sep) else f"{root}{os.sep}"
+    return path == root or path.startswith(root_with_sep)
+
+
+def _escape_pdf_text(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _build_basic_pdf(content_lines: list[str]) -> bytes:
+    safe_lines = [_escape_pdf_text(line) for line in content_lines]
+
+    if not safe_lines:
+        safe_lines = ["Open Notebook PDF"]
+
+    text_ops = ["BT", "/F1 12 Tf", "72 770 Td"]
+    for idx, line in enumerate(safe_lines):
+        if idx > 0:
+            text_ops.append("0 -14 Td")
+        text_ops.append(f"({line}) Tj")
+    text_ops.append("ET")
+
+    content_stream = ("\n".join(text_ops) + "\n").encode("latin-1", errors="replace")
+
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length " + str(len(content_stream)).encode("ascii") + b" >>\nstream\n" + content_stream + b"endstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+
+    pdf = b"%PDF-1.4\n"
+    offsets = [0]
+
+    for object_index, object_data in enumerate(objects, start=1):
+        offsets.append(len(pdf))
+        pdf += f"{object_index} 0 obj\n".encode("ascii")
+        pdf += object_data + b"\nendobj\n"
+
+    start_xref = len(pdf)
+    pdf += f"xref\n0 {len(objects) + 1}\n".encode("ascii")
+    pdf += b"0000000000 65535 f \n"
+
+    for offset in offsets[1:]:
+        pdf += f"{offset:010d} 00000 n \n".encode("ascii")
+
+    pdf += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{start_xref}\n%%EOF"
+    ).encode("ascii")
+
+    return pdf
+
+
+def _is_pdf_file(path: str) -> bool:
+    if not path.lower().endswith(".pdf"):
+        return False
+
+    try:
+        with open(path, "rb") as file_handle:
+            header = file_handle.read(5)
+        return header == b"%PDF-"
+    except Exception:
+        return False
+
+
+def _safe_source_filename(source_id: str, suffix: str = ".pdf") -> str:
+    safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", source_id)
+    return f"source_{safe_id}{suffix}"
+
+
+async def _migrate_external_pdf_to_uploads(source: Source, source_id: str, external_path: str) -> Optional[str]:
+    if not _is_pdf_file(external_path):
+        return None
+
+    safe_root = os.path.realpath(UPLOADS_FOLDER)
+    os.makedirs(safe_root, exist_ok=True)
+
+    target_filename = _safe_source_filename(source_id)
+    target_path = os.path.realpath(os.path.join(safe_root, target_filename))
+
+    if not _is_under_directory(target_path, safe_root):
+        return None
+
+    shutil.copy2(external_path, target_path)
+
+    if source.asset:
+        source.asset.file_path = target_path
+    await source.save()
+
+    logger.info(
+        f"Migrated source file into uploads directory for {source_id}: {target_path}"
+    )
+    return target_path
+
+
+async def _materialize_fallback_pdf(source: Source, source_id: str) -> Optional[str]:
+    if not source.full_text:
+        return None
+
+    safe_root = os.path.realpath(UPLOADS_FOLDER)
+    os.makedirs(safe_root, exist_ok=True)
+
+    target_filename = _safe_source_filename(source_id, suffix="_fallback.pdf")
+    target_path = os.path.realpath(os.path.join(safe_root, target_filename))
+    if not _is_under_directory(target_path, safe_root):
+        return None
+
+    title = (source.title or "Document").strip()
+    wrapped_text = textwrap.wrap(source.full_text.strip(), width=90)
+    preview_lines = [title, "", *wrapped_text[:120]]
+    pdf_bytes = _build_basic_pdf(preview_lines)
+
+    with open(target_path, "wb") as output_file:
+        output_file.write(pdf_bytes)
+
+    if source.asset:
+        source.asset.file_path = target_path
+    else:
+        source.asset = Asset(file_path=target_path)
+    await source.save()
+
+    logger.warning(
+        f"Generated fallback PDF for source {source_id} because original file was unavailable"
+    )
+    return target_path
 
 
 def generate_unique_filename(original_filename: str, upload_folder: str) -> str:
@@ -745,14 +877,32 @@ async def _resolve_source_file(source_id: str) -> tuple[str, str]:
     safe_root = os.path.realpath(UPLOADS_FOLDER)
     resolved_path = os.path.realpath(file_path)
 
-    if not resolved_path.startswith(safe_root):
+    if _is_under_directory(resolved_path, safe_root):
+        if not os.path.exists(resolved_path):
+            fallback_path = await _materialize_fallback_pdf(source, source_id)
+            if fallback_path:
+                resolved_path = fallback_path
+            else:
+                raise HTTPException(status_code=404, detail="File not found on server")
+    else:
         logger.warning(
-            f"Blocked download outside uploads directory for source {source_id}: {resolved_path}"
+            f"Source file for {source_id} is outside uploads, attempting migration: {resolved_path}"
         )
-        raise HTTPException(status_code=403, detail="Access to file denied")
-
-    if not os.path.exists(resolved_path):
-        raise HTTPException(status_code=404, detail="File not found on server")
+        if os.path.exists(resolved_path):
+            migrated_path = await _migrate_external_pdf_to_uploads(source, source_id, resolved_path)
+            if migrated_path:
+                resolved_path = migrated_path
+            else:
+                raise HTTPException(status_code=403, detail="Access to file denied")
+        else:
+            fallback_path = await _materialize_fallback_pdf(source, source_id)
+            if fallback_path:
+                resolved_path = fallback_path
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Original source file is no longer available on server",
+                )
 
     filename = os.path.basename(resolved_path)
     return resolved_path, filename
@@ -850,10 +1000,16 @@ async def download_source_file(source_id: str):
     """Download the original file associated with an uploaded source."""
     try:
         resolved_path, filename = await _resolve_source_file(source_id)
+
+        # Detect content type from file extension
+        media_type = "application/octet-stream"
+        if filename.lower().endswith(".pdf"):
+            media_type = "application/pdf"
+
         return FileResponse(
             path=resolved_path,
             filename=filename,
-            media_type="application/octet-stream",
+            media_type=media_type,
         )
     except HTTPException:
         raise

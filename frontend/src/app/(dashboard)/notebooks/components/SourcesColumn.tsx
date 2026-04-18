@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
+import { usePathname, useRouter } from 'next/navigation'
 import { SourceListResponse } from '@/lib/types/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,13 +18,14 @@ import { AddSourceDialog } from '@/components/sources/AddSourceDialog'
 import { AddExistingSourceDialog } from '@/components/sources/AddExistingSourceDialog'
 import { SourceCard } from '@/components/sources/SourceCard'
 import { useDeleteSource, useRetrySource, useRemoveSourceFromNotebook } from '@/lib/hooks/use-sources'
-import { sourcesApi } from '@/lib/api/sources'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { useModalManager } from '@/lib/hooks/use-modal-manager'
 import { ContextMode } from '../[id]/page'
 import { CollapsibleColumn, createCollapseButton } from '@/components/notebooks/CollapsibleColumn'
 import { useNotebookColumnsStore } from '@/lib/stores/notebook-columns-store'
 import { useTranslation } from '@/lib/hooks/use-translation'
+import { useNavigation } from '@/lib/hooks/use-navigation'
+import { isPdfSource } from '@/lib/utils/pdf'
 
 interface SourcesColumnProps {
   sources?: SourceListResponse[]
@@ -50,6 +52,9 @@ export function SourcesColumn({
   isFetchingNextPage,
   fetchNextPage,
 }: SourcesColumnProps) {
+  const router = useRouter()
+  const pathname = usePathname()
+  const navigation = useNavigation()
   const { t } = useTranslation()
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -143,6 +148,14 @@ export function SourcesColumn({
   }
 
   const handleSourceClick = (sourceId: string) => {
+    const source = sources?.find(item => item.id === sourceId)
+
+    if (source && isPdfSource(source)) {
+      navigation.setReturnTo(pathname, t.common.back)
+      router.push(`/pdf/${encodeURIComponent(sourceId)}`)
+      return
+    }
+
     openModal('source', sourceId)
   }
 
